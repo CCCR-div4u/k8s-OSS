@@ -36,9 +36,9 @@ jobs:
       run: |
         helm repo add argo https://argoproj.github.io/argo-helm
         helm repo update
-				helm upgrade --install argocd argo/argo-cd \
-				  --version 7.7.17 \
-				  -n argocd \
-				  -f argo-cd/my-values.yaml \
-				  --wait --timeout=10m
+        helm upgrade --install argocd argo/argo-cd \
+        --version 7.7.17 \
+        -n argocd \
+        -f argo-cd/my-values.yaml \
+        --wait --timeout=10m
 		
