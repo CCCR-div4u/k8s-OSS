@@ -41,4 +41,3 @@ jobs:
         -n argocd \
         -f argo-cd/my-values.yaml \
         --wait --timeout=10m
-		
