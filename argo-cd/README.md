@@ -26,14 +26,14 @@ helm pull argo/argo-cd --version 7.7.17
 
 - Helm chart를 다운로드(pull)하는 명령어.
 - `argo` 저장소에서 `argo-cd` chart를 7.7.17 버전으로 받아옴.
-- 압축된 `.tgz` 파일로 저장
+-  `.tgz` 압축 파일 저장
 
 ```bash
 tar xvzf argo-cd-7.7.17.tgz
 ```
 
-- 압축(`.tgz`) 풀기 명령어
-- 풀면 chart 디렉토리(`argo-cd/`) 생긴다.
+- 압축 파일(`.tgz`) 해제 명령어
+- chart 디렉토리(`argo-cd/`) 생성
 
 ```bash
 cd argo-cd
@@ -52,7 +52,7 @@ aws acm list-certificates --query "CertificateSummaryList[?DomainName=='bluesunn
 vi my-values.yaml
 ```
 
-- 이전 단계에서 ACM 인증서
+- ARN, 도메인 주소 알맞게 설정
 
 **5) Helm으로 ArgoCD 설치**
 
@@ -80,3 +80,7 @@ kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath="{.data.pas
 - username: admin
 - password: 8에서 확인한 초기 비밀번호
 <img width="910" height="743" alt="image" src="https://github.com/user-attachments/assets/1138a394-c4c3-4b4d-ad70-05fac023ef57" />
+
+**10) GitHub Action workflow**
+- my-value.yaml 변경 사항이 있을 때마다 자동 배포
+- .github/workflows/deploy-argo-cd 파일
