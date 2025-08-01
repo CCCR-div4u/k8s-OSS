@@ -57,7 +57,7 @@ vi my-values.yaml
 **5) Helm으로 ArgoCD 설치**
 
 ```bash
-helm install argocd --namespace argocd -f new-values.yaml .
+helm install argocd --namespace argocd -f my-values.yaml .
 ```
 
 **6) 설치 확인**
