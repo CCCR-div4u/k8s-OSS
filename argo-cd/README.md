@@ -81,6 +81,9 @@ kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath="{.data.pas
 - password: 8에서 확인한 초기 비밀번호
 <img width="910" height="743" alt="image" src="https://github.com/user-attachments/assets/1138a394-c4c3-4b4d-ad70-05fac023ef57" />
 
-**10) GitHub Action workflow**
+---
+
+ ## 2. GitHub Action workflow
+ - .github/workflows/deploy-argo-cd 파일
 - my-value.yaml 변경 사항이 있을 때마다 자동 배포
-- .github/workflows/deploy-argo-cd 파일
+
