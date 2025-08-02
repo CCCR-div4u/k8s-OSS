@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lgtm-grafana
+  namespace: lgtm-stack
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/instance: lgtm
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+    - isDefault: true
+      name: Mimir
+      type: prometheus
+      url: http://lgtm-mimir-nginx:80/prometheus
+      jsonData:
+        httpHeaderName1: "X-Scope-OrgID"
+      secureJsonData:
+        httpHeaderValue1: "anonymous"
+    - name: Loki
+      type: loki
+      url: http://lgtm-loki-query-frontend:3100
+    - name: Tempo
+      type: tempo
+      url: http://lgtm-tempo-query-frontend:3100

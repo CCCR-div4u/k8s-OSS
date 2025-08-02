@@ -1,0 +1,175 @@
+# Promtail Configuration for Hybrid Setup
+# Log collection agent for Loki
+
+# Promtail configuration
+config:
+  # Server configuration
+  server:
+    http_listen_port: 3101
+    grpc_listen_port: 0
+  
+  # Position file
+  positions:
+    filename: /run/promtail/positions.yaml
+  
+  # Loki client configuration
+  clients:
+    - url: http://loki:3100/loki/api/v1/push
+      tenant_id: ""
+  
+  # Scrape configurations
+  scrape_configs:
+    # Kubernetes pods
+    - job_name: kubernetes-pods
+      kubernetes_sd_configs:
+        - role: pod
+      
+      pipeline_stages:
+        - cri: {}
+      
+      relabel_configs:
+        # Only scrape pods that have a log file
+        - source_labels: [__meta_kubernetes_pod_annotation_kubernetes_io_config_seen]
+          action: drop
+          regex: ""
+        
+        # Add namespace label
+        - source_labels: [__meta_kubernetes_namespace]
+          target_label: namespace
+        
+        # Add pod label
+        - source_labels: [__meta_kubernetes_pod_name]
+          target_label: pod
+        
+        # Add container label
+        - source_labels: [__meta_kubernetes_pod_container_name]
+          target_label: container
+        
+        # Add node label
+        - source_labels: [__meta_kubernetes_pod_node_name]
+          target_label: node
+        
+        # Add app label if exists
+        - source_labels: [__meta_kubernetes_pod_label_app]
+          target_label: app
+        
+        # Add service label if exists
+        - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+          target_label: service
+        
+        # Set log path
+        - replacement: /var/log/pods/*$1/*.log
+          separator: /
+          source_labels: [__meta_kubernetes_pod_uid, __meta_kubernetes_pod_container_name]
+          target_label: __path__
+        
+        # Drop empty containers
+        - source_labels: [__meta_kubernetes_pod_container_name]
+          action: drop
+          regex: ""
+
+# DaemonSet configuration
+daemonset:
+  enabled: true
+
+# Service configuration
+service:
+  enabled: true
+  type: ClusterIP
+  port: 3101
+  targetPort: 3101
+
+# ServiceMonitor for Prometheus scraping
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
+  additionalLabels:
+    monitoring: prometheus
+
+# Resource limits
+resources:
+  limits:
+    cpu: 200m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Security context
+securityContext:
+  readOnlyRootFilesystem: true
+  runAsGroup: 0
+  runAsUser: 0
+
+# Pod security context
+podSecurityContext:
+  runAsUser: 0
+  runAsGroup: 0
+
+# Volume mounts
+volumeMounts:
+  - name: config
+    mountPath: /etc/promtail
+  - name: run
+    mountPath: /run/promtail
+  - name: containers
+    mountPath: /var/lib/docker/containers
+    readOnly: true
+  - name: pods
+    mountPath: /var/log/pods
+    readOnly: true
+
+# Volumes
+volumes:
+  - name: config
+    configMap:
+      name: promtail
+  - name: run
+    hostPath:
+      path: /run/promtail
+  - name: containers
+    hostPath:
+      path: /var/lib/docker/containers
+  - name: pods
+    hostPath:
+      path: /var/log/pods
+
+# Node selector
+nodeSelector: {}
+
+# Tolerations (to run on all nodes including master)
+tolerations:
+  - effect: NoSchedule
+    operator: Exists
+  - effect: NoExecute
+    operator: Exists
+
+# Affinity
+affinity: {}
+
+# Priority class
+priorityClassName: ""
+
+# Additional labels
+additionalLabels:
+  app.kubernetes.io/part-of: lgtm-hybrid
+
+# Pod annotations
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "3101"
+  prometheus.io/path: "/metrics"
+
+# Update strategy
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+
+# Environment variables
+env:
+  - name: HOSTNAME
+    valueFrom:
+      fieldRef:
+        fieldPath: spec.nodeName

@@ -1,0 +1,62 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lgtm-stack-ingress
+  namespace: lgtm-stack
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80,"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-northeast-2:219967435143:certificate/5d011410-cf0a-4412-94fd-9482bed70ef8
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/backend-protocol: HTTP
+spec:
+  ingressClassName: alb
+  rules:
+    # Grafana Dashboard
+    - host: lgtm-grafana.bluesunnywings.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: lgtm-grafana
+                port:
+                  number: 80
+    
+    # Mimir Query Frontend (API access)
+    - host: lgtm-mimir.bluesunnywings.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: lgtm-mimir-nginx
+                port:
+                  number: 80
+    
+    # Loki Query Frontend (API access)
+    - host: lgtm-loki.bluesunnywings.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: lgtm-loki-query-frontend
+                port:
+                  number: 3100
+    
+    # Tempo Query Frontend (API access)
+    - host: lgtm-tempo.bluesunnywings.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: lgtm-tempo-query-frontend
+                port:
+                  number: 3100

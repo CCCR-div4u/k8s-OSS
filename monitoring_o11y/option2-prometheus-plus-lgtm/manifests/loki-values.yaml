@@ -1,0 +1,114 @@
+# Loki Configuration for Hybrid Setup
+# Works alongside existing Prometheus
+
+# Global configuration
+global:
+  dnsService: "kube-dns"
+  dnsNamespace: "kube-system"
+
+# Loki configuration
+loki:
+  # Authentication
+  auth_enabled: false
+  
+  # Server configuration
+  server:
+    http_listen_port: 3100
+    grpc_listen_port: 9095
+  
+  # Storage configuration
+  storage_config:
+    boltdb_shipper:
+      active_index_directory: /loki/boltdb-shipper-active
+      cache_location: /loki/boltdb-shipper-cache
+      shared_store: filesystem
+    filesystem:
+      directory: /loki/chunks
+  
+  # Schema configuration
+  schema_config:
+    configs:
+      - from: 2020-10-24
+        store: boltdb-shipper
+        object_store: filesystem
+        schema: v11
+        index:
+          prefix: index_
+          period: 24h
+  
+  # Limits configuration
+  limits_config:
+    enforce_metric_name: false
+    reject_old_samples: true
+    reject_old_samples_max_age: 168h  # 7 days
+    retention_period: 168h  # 7 days
+    ingestion_rate_mb: 16
+    ingestion_burst_size_mb: 32
+  
+  # Table manager (for retention)
+  table_manager:
+    retention_deletes_enabled: true
+    retention_period: 168h  # 7 days
+
+# Deployment configuration
+deployment:
+  replicas: 1
+
+# Persistence
+persistence:
+  enabled: true
+  size: 30Gi
+  storageClassName: gp3
+  accessModes:
+    - ReadWriteOnce
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 3100
+  targetPort: 3100
+
+# Resource limits
+resources:
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+
+# Security context
+securityContext:
+  fsGroup: 10001
+  runAsGroup: 10001
+  runAsNonRoot: true
+  runAsUser: 10001
+
+# Pod security context
+podSecurityContext:
+  fsGroup: 10001
+
+# Service monitor for Prometheus scraping
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
+  additionalLabels:
+    monitoring: prometheus
+
+# Ingress (disabled - using ALB)
+ingress:
+  enabled: false
+
+# Node selector
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity
+affinity: {}
+
+# Additional labels
+additionalLabels:
+  app.kubernetes.io/part-of: lgtm-hybrid

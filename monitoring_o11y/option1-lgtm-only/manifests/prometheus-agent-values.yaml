@@ -1,0 +1,77 @@
+# Prometheus Agent Configuration for LGTM Stack
+# Agent mode: only scrapes and forwards to Mimir
+
+prometheus:
+  # Agent mode - no local storage
+  agentMode: true
+  
+  # Remote write to Mimir
+  prometheusSpec:
+    # Agent mode settings
+    mode: "Agent"
+    
+    # Remote write configuration
+    remoteWrite:
+      - url: http://lgtm-mimir-distributor.lgtm-stack.svc:8080/api/v1/push
+        name: mimir
+        headers:
+          X-Scope-OrgID: "anonymous"
+    
+    # Service discovery and scraping
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelector: {}
+    serviceMonitorNamespaceSelector: {}
+    
+    # Resource limits
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+      requests:
+        cpu: 200m
+        memory: 512Mi
+    
+    # Storage (minimal for agent mode)
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 5Gi
+
+# Disable components not needed for agent mode
+alertmanager:
+  enabled: false
+
+grafana:
+  enabled: false
+
+# Keep only essential components
+kubeApiServer:
+  enabled: true
+
+kubelet:
+  enabled: true
+
+kubeControllerManager:
+  enabled: false
+
+coreDns:
+  enabled: true
+
+kubeEtcd:
+  enabled: false
+
+kubeScheduler:
+  enabled: false
+
+kubeProxy:
+  enabled: true
+
+kubeStateMetrics:
+  enabled: false  # We already have it
+
+nodeExporter:
+  enabled: false  # We already have it

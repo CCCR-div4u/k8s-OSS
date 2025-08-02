@@ -1,0 +1,188 @@
+# Tempo Configuration for Hybrid Setup
+# Works alongside existing Prometheus
+
+# Tempo configuration
+tempo:
+  # Server configuration
+  server:
+    http_listen_port: 3100
+    grpc_listen_port: 9095
+  
+  # Distributor configuration
+  distributor:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+      jaeger:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:14250
+          thrift_http:
+            endpoint: 0.0.0.0:14268
+          thrift_compact:
+            endpoint: 0.0.0.0:6831
+          thrift_binary:
+            endpoint: 0.0.0.0:6832
+  
+  # Storage configuration
+  storage:
+    trace:
+      backend: local
+      local:
+        path: /var/tempo/traces
+      pool:
+        max_workers: 100
+        queue_depth: 10000
+  
+  # Query frontend configuration
+  query_frontend:
+    search:
+      duration_slo: 5s
+      throughput_bytes_slo: 1.073741824e+09
+    trace_by_id:
+      duration_slo: 5s
+
+# Deployment configuration
+replicas: 1
+
+# Persistence
+persistence:
+  enabled: true
+  size: 20Gi
+  storageClassName: gp3
+  accessModes:
+    - ReadWriteOnce
+
+# Service configuration
+service:
+  type: ClusterIP
+  ports:
+    - name: tempo-prom-metrics
+      port: 3100
+      targetPort: 3100
+    - name: tempo-query
+      port: 16686
+      targetPort: 16686
+    - name: tempo-otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: tempo-otlp-http
+      port: 4318
+      targetPort: 4318
+    - name: tempo-jaeger-grpc
+      port: 14250
+      targetPort: 14250
+    - name: tempo-jaeger-http
+      port: 14268
+      targetPort: 14268
+
+# Resource limits
+resources:
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+
+# Security context
+securityContext:
+  fsGroup: 1000
+  runAsGroup: 1000
+  runAsNonRoot: true
+  runAsUser: 1000
+
+# Pod security context
+podSecurityContext:
+  fsGroup: 1000
+
+# Service monitor for Prometheus scraping
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
+  additionalLabels:
+    monitoring: prometheus
+
+# Ingress (disabled - using ALB)
+ingress:
+  enabled: false
+
+# Environment variables
+env:
+  - name: JAEGER_AGENT_HOST
+    value: "tempo"
+  - name: JAEGER_AGENT_PORT
+    value: "6831"
+
+# Node selector
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity
+affinity: {}
+
+# Additional labels
+additionalLabels:
+  app.kubernetes.io/part-of: lgtm-hybrid
+
+# Config override
+config: |
+  server:
+    http_listen_port: 3100
+    grpc_listen_port: 9095
+
+  distributor:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+      jaeger:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:14250
+          thrift_http:
+            endpoint: 0.0.0.0:14268
+          thrift_compact:
+            endpoint: 0.0.0.0:6831
+          thrift_binary:
+            endpoint: 0.0.0.0:6832
+
+  ingester:
+    lifecycler:
+      address: 127.0.0.1
+      ring:
+        kvstore:
+          store: inmemory
+        replication_factor: 1
+      final_sleep: 0s
+    trace_idle_period: 10s
+    max_block_bytes: 1_000_000
+    max_block_duration: 5m
+
+  memberlist:
+    abort_if_cluster_join_fails: false
+    bind_port: 7946
+    join_members:
+      - tempo-memberlist
+
+  overrides:
+    per_tenant_override_config: /conf/overrides.yaml
+
+  storage:
+    trace:
+      backend: local
+      local:
+        path: /var/tempo/traces
+      pool:
+        max_workers: 100
+        queue_depth: 10000
