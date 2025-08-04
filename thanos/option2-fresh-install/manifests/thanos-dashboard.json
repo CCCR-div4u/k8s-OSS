@@ -1,0 +1,48 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "Thanos Overview",
+    "tags": ["thanos"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Thanos Query Status",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "up{job=\"thanos-query\"}",
+            "legendFormat": "Thanos Query"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+      },
+      {
+        "id": 2,
+        "title": "Connected Stores",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "thanos_store_nodes_grpc_connections",
+            "legendFormat": "Connected Stores"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+      },
+      {
+        "id": 3,
+        "title": "S3 Upload Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(thanos_objstore_bucket_operations_total[5m])",
+            "legendFormat": "{{operation}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+      }
+    ],
+    "time": {"from": "now-1h", "to": "now"},
+    "refresh": "30s"
+  }
+}

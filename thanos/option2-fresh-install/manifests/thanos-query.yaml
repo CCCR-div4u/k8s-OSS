@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: thanos-query
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: thanos-query
+  template:
+    metadata:
+      labels:
+        app: thanos-query
+    spec:
+      containers:
+      - name: thanos-query
+        image: quay.io/thanos/thanos:v0.32.5
+        args:
+        - query
+        - --log.level=info
+        - --store=prometheus-operated.monitoring.svc.cluster.local:10901
+        ports:
+        - name: http
+          containerPort: 10902
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: thanos-query
+  namespace: monitoring
+spec:
+  selector:
+    app: thanos-query
+  ports:
+  - name: http
+    port: 9090
+    targetPort: 10902

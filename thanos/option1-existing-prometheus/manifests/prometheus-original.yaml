@@ -1,0 +1,53 @@
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: prometheus-kube-prometheus-prometheus
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/component: prometheus
+    app.kubernetes.io/instance: kube-prometheus-stack
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: kube-prometheus-stack
+    app.kubernetes.io/version: 2.45.0
+spec:
+  # 기존 Prometheus 설정 (Thanos 없음)
+  replicas: 2
+  retention: 15d
+  storage:
+    volumeClaimTemplate:
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 50Gi
+        storageClassName: gp3
+  
+  # ServiceMonitor 선택자
+  serviceMonitorSelector:
+    matchLabels:
+      release: prometheus
+  
+  # Rule 선택자  
+  ruleSelector:
+    matchLabels:
+      release: prometheus
+      
+  # 리소스 설정
+  resources:
+    requests:
+      memory: 400Mi
+      cpu: 100m
+    limits:
+      memory: 2Gi
+      cpu: 1000m
+  
+  # 보안 설정
+  securityContext:
+    fsGroup: 2000
+    runAsGroup: 2000
+    runAsNonRoot: true
+    runAsUser: 1000
+  
+  # ServiceAccount
+  serviceAccountName: prometheus-kube-prometheus-prometheus

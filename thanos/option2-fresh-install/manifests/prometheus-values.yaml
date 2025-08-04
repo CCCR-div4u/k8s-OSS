@@ -1,0 +1,82 @@
+# Prometheus + Grafana + Thanos 통합 설정
+prometheus:
+  prometheusSpec:
+    # Thanos Sidecar 설정
+    thanos:
+      image: quay.io/thanos/thanos:v0.32.5
+      version: v0.32.5
+      objectStorageConfig:
+        name: thanos-objstore-config
+        key: objstore.yml
+    
+    # 데이터 보존 기간
+    retention: 15d
+    
+    # 스토리지 설정
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          resources:
+            requests:
+              storage: 50Gi
+          storageClassName: gp3
+    
+    # 리소스 설정
+    resources:
+      requests:
+        memory: 400Mi
+        cpu: 100m
+      limits:
+        memory: 2Gi
+        cpu: 1000m
+
+# Grafana 설정
+grafana:
+  # 관리자 패스워드
+  adminPassword: admin123!
+  
+  # 기본 데이터 소스 비활성화
+  defaultDashboardsEnabled: false
+  
+  # 기본 Prometheus 데이터소스 비활성화
+  sidecar:
+    datasources:
+      defaultDatasourceEnabled: false
+  
+  # 커스텀 데이터 소스 설정 (Thanos Query 연동)
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+      - name: Thanos-Query
+        type: prometheus
+        url: http://thanos-query:9090
+        access: proxy
+        isDefault: true
+        jsonData:
+          timeInterval: 30s
+  
+  # 리소스 설정
+  resources:
+    requests:
+      memory: 128Mi
+      cpu: 100m
+    limits:
+      memory: 512Mi
+      cpu: 500m
+  
+  # 서비스 설정
+  service:
+    type: ClusterIP
+    port: 80
+
+# AlertManager 설정
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        memory: 200Mi
+        cpu: 100m
+      limits:
+        memory: 500Mi
+        cpu: 500m
