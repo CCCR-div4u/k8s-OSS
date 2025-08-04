@@ -45,6 +45,7 @@ kubectl apply -f ../manifests/thanos-query.yaml
 echo "5/6 ☕ Sample App 배포..."
 kubectl apply -f ../sample-app/jmx-configmap.yaml
 kubectl apply -f ../sample-app/storage-test.yaml
+kubectl apply -f ../sample-app/servicemonitor.yaml
 
 # 6. Grafana 데이터 소스 설정 적용
 echo "6/6 📊 Grafana 데이터 소스 설정..."

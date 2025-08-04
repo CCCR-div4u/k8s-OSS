@@ -9,6 +9,7 @@ fi
 
 # 1. Sample App 삭제
 echo "1/5 ☕ Sample App 삭제..."
+kubectl delete -f ../sample-app/servicemonitor.yaml --ignore-not-found
 kubectl delete -f ../sample-app/storage-test.yaml --ignore-not-found
 kubectl delete -f ../sample-app/jmx-configmap.yaml --ignore-not-found
 

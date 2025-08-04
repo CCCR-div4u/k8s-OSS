@@ -43,7 +43,7 @@ grafana:
     datasources:
       defaultDatasourceEnabled: false
   
-  # 커스텀 데이터 소스 설정 (Thanos Query 연동)
+  # 커스텀 데이터 소스 설정 (Thanos Query + Direct Prometheus)
   datasources:
     datasources.yaml:
       apiVersion: 1
@@ -55,6 +55,13 @@ grafana:
         isDefault: true
         jsonData:
           timeInterval: 30s
+      - name: Prometheus-Direct
+        type: prometheus
+        url: http://monitoring-kube-prometheus-prometheus:9090
+        access: proxy
+        isDefault: false
+        jsonData:
+          timeInterval: 15s
   
   # 리소스 설정
   resources:

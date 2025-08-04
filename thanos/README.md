@@ -70,8 +70,7 @@ cd option2-fresh-install/scripts
 
 ### Grafana 대시보드 ID
 - **Thanos Overview**: 12937
-- **Thanos Query**: 12936
-- **Thanos Compact**: 12938
+
 
 ### 접속 정보
 - **Grafana**: `https://grafana.bluesunnywings.com`
