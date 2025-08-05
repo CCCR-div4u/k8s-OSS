@@ -1,0 +1,93 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: eks-alerts
+  namespace: monitoring
+  labels:
+    app: kube-prometheus-stack
+    release: monitoring
+spec:
+  groups:
+  - name: eks-node-alerts
+    rules:
+    # 노드 CPU 사용률 70% 이상
+    - alert: NodeCPUHigh
+      expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 70
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "노드 CPU 사용률 높음"
+        value: "{{ $value | printf \"%.1f\" }}%"
+        
+    # 노드 메모리 사용률 75% 이상
+    - alert: NodeMemoryHigh
+      expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 75
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "노드 메모리 사용률 높음"
+        value: "{{ $value | printf \"%.1f\" }}%"
+        
+    # 노드 다운
+    - alert: NodeDown
+      expr: up{job="node-exporter"} == 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "워커 노드 다운"
+        value: "노드 응답 없음"
+        
+  - name: eks-pod-alerts
+    rules:
+    # 파드 Pending 상태 (워커 노드 추가 필요)
+    - alert: PodsPendingResourceShortage
+      expr: kube_pod_status_phase{phase="Pending"} > 0
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "파드 스케줄링 실패 - 워커 노드 추가 필요"
+        value: "{{ $value }}개 파드 Pending"
+        
+    # 노드 파드 포화 상태 (사용률 80% 이상)
+    - alert: NodePodsSaturated
+      expr: |
+        (
+          (
+            kube_node_status_allocatable{resource="pods"} - 
+            kube_node_status_capacity{resource="pods"}
+          ) / kube_node_status_allocatable{resource="pods"}
+        ) * 100 > 80
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "노드 파드 사용률 높음 - 워커 노드 추가 권장"
+        value: "파드 사용률 {{ $value | printf \"%.1f\" }}%"
+        
+    # 클러스터 리소스 사용률 70% 이상
+    - alert: ClusterResourceHigh
+      expr: |
+        (
+          sum(kube_pod_container_resource_requests{resource="cpu"}) / 
+          sum(kube_node_status_allocatable{resource="cpu"})
+        ) * 100 > 70
+      for: 3m
+      labels:
+        severity: warning
+      annotations:
+        summary: "클러스터 리소스 사용률 높음 - 워커 노드 추가 고려"
+        value: "CPU 요청률 {{ $value | printf \"%.1f\" }}%"
+        
+    # 파드 재시작 빈번
+    - alert: PodRestartingFrequently
+      expr: rate(kube_pod_container_status_restarts_total[15m]) * 60 > 1
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "파드 재시작 빈번"
+        value: "{{ $value | printf \"%.1f\" }}회/분"

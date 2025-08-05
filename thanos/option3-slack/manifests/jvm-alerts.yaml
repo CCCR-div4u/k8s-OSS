@@ -1,0 +1,51 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: jvm-alerts
+  namespace: monitoring
+  labels:
+    app: kube-prometheus-stack
+    release: monitoring
+spec:
+  groups:
+  - name: jvm-alerts
+    rules:
+    # JVM 힙 메모리 사용률 60% 이상
+    - alert: JVMHeapMemoryHigh
+      expr: (jvm_memory_bytes_used{area="heap"} / jvm_memory_bytes_max{area="heap"}) * 100 > 60
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "JVM 힙 메모리 사용률 높음"
+        value: "{{ $value | printf \"%.1f\" }}%"
+        
+    # GC 빈도 5분간 3회 이상
+    - alert: JVMFrequentGC
+      expr: rate(jvm_gc_collection_seconds_count[5m]) * 300 > 3
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "JVM GC 발생 빈도 높음"
+        value: "{{ $value | printf \"%.1f\" }}회/5분"
+        
+    # JVM 스레드 수 50개 이상
+    - alert: JVMHighThreadCount
+      expr: jvm_threads_current > 50
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "JVM 스레드 수 높음"
+        value: "{{ $value }}개"
+        
+    # Java 앱 다운
+    - alert: JavaAppDown
+      expr: up{job="java-sample-app-jmx"} == 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Java 애플리케이션 다운"
+        value: "앱 응답 없음"
