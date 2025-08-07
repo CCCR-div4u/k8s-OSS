@@ -105,7 +105,8 @@ kubectl get ingress -n sonarqube
 2. **Issues**, **Security Hotspots**, **Coverage** 탭 확인
 3. **Code Smells**, **Bugs**, **Vulnerabilities** 분석
 
-![image.png](attachment:0c7ee48d-3940-4721-8778-6f54beed2c3b:image.png)
+<img width="1851" height="1049" alt="image" src="https://github.com/user-attachments/assets/f0472bed-dd63-482a-911b-36cf4e5a012f" />
+
 
 
 ## 🚀 CI/CD 통합 (GitHub Actions 연동)
