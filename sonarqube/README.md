@@ -79,12 +79,12 @@ kubectl get ingress -n sonarqube
 
 ### 2-2. 관리자 비밀번호 변경
 1. 로그인 후 비밀번호 변경 프롬프트 확인
-2. 새 비밀번호 설정: `NewPassword123!`
+2. 새 비밀번호 설정: `Cccrcabta04!`
 
 ### 2-3. 프로젝트 생성
 1. **Create Project** 클릭
-2. **Project Key**: `my-java-project`
-3. **Display Name**: `My Java Project`
+2. **Project Key**: `spring-petclinic`
+3. **Display Name**: `spring-petclinic`
 4. **Create** 클릭
 
 ## 📊 실습 3: 코드 분석 실습
@@ -92,178 +92,110 @@ kubectl get ingress -n sonarqube
 ### 3-1. 분석 토큰 생성
 1. **My Account** → **Security** 탭
 2. **Generate Tokens**
-3. **Token Name**: `jenkins-token`
+3. **Token Name**: `spring-petclinic`
 4. **Generate** 클릭 후 토큰 복사
 
-### 3-2. 샘플 Java 프로젝트 준비
+### 3-2. 샘플 프로젝트 기존 petclinic 사용
 ```bash
-# 샘플 프로젝트 클론
-git clone https://github.com/SonarSource/sonar-scanning-examples.git
-cd sonar-scanning-examples/sonarqube-scanner-maven/maven-basic
+저장소: https://github.com/Jiwon-sim/spring-petclinic.git
 ```
 
-### 3-3. Maven으로 SonarQube 분석 실행
-```bash
-mvn clean verify sonar:sonar \
-  -Dsonar.projectKey=my-java-project \
-  -Dsonar.host.url=https://sonarqube.bluesunnywings.com \
-  -Dsonar.login=YOUR_TOKEN_HERE
-```
-
-### 3-4. 분석 결과 확인
+### 3-3. 분석 결과 확인
 1. SonarQube 웹 UI에서 프로젝트 확인
 2. **Issues**, **Security Hotspots**, **Coverage** 탭 확인
 3. **Code Smells**, **Bugs**, **Vulnerabilities** 분석
 
-## 🔧 실습 4: Quality Gate 설정
+![image.png](attachment:0c7ee48d-3940-4721-8778-6f54beed2c3b:image.png)
 
-### 4-1. Quality Gate 생성
-1. **Quality Gates** 메뉴 이동
-2. **Create** 클릭
-3. **Name**: `My Quality Gate`
 
-### 4-2. 조건 설정
-- **Coverage**: < 80% (Error)
-- **Duplicated Lines**: > 3% (Error)
-- **Maintainability Rating**: > A (Error)
-- **Reliability Rating**: > A (Error)
-- **Security Rating**: > A (Error)
+## 🚀 CI/CD 통합 (GitHub Actions 연동)
 
-### 4-3. 프로젝트에 Quality Gate 적용
-1. **Projects** → 프로젝트 선택
-2. **Project Settings** → **Quality Gate**
-3. 생성한 Quality Gate 선택
-
-## 🚀 실습 5: CI/CD 통합 (GitHub Actions 연동)
-
-### 5-1. GitHub Repository Secrets 설정
+### GitHub Repository Secrets 설정
 1. GitHub Repository → **Settings** → **Secrets and variables** → **Actions**
 2. **New repository secret** 클릭
 3. **SONAR_TOKEN**: SonarQube에서 생성한 토큰 값
 4. **SONAR_HOST_URL**: `https://sonarqube.bluesunnywings.com`
 
-### 5-2. GitHub Actions Workflow 생성
-`.github/workflows/sonarqube.yml` 파일 생성:
+### GitHub Actions Workflow 생성
+`.github/workflows/build.yml` 파일 생성:
 ```yaml
-name: SonarQube Analysis
+name: Build
 
 on:
   push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main ]
+    branches:
+      - main
+
 
 jobs:
-  sonarqube:
+  build:
+    name: Build and analyze
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-      with:
-        fetch-depth: 0
-    
-    - name: Set up JDK 11
-      uses: actions/setup-java@v3
-      with:
-        java-version: '11'
-        distribution: 'temurin'
-    
-    - name: Cache Maven dependencies
-      uses: actions/cache@v3
-      with:
-        path: ~/.m2
-        key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
-        restore-keys: ${{ runner.os }}-m2
-    
-    - name: Run tests
-      run: mvn clean test
-    
-    - name: SonarQube Scan
-      uses: sonarqube-quality-gate-action@master
-      env:
-        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-      with:
-        scanMetadataReportFile: target/sonar/report-task.txt
-    
-    - name: Run SonarQube Analysis
-      run: |
-        mvn clean verify sonar:sonar \
-          -Dsonar.projectKey=my-java-project \
-          -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }} \
-          -Dsonar.login=${{ secrets.SONAR_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: 'zulu' # Alternative distribution options are available.
+      - name: Cache SonarQube packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/caches
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle') }}
+          restore-keys: ${{ runner.os }}-gradle
+      - name: Build and analyze
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: ./gradlew build sonar --info
 ```
 
-### 5-3. Pull Request 분석 설정
-```yaml
-name: SonarQube PR Analysis
-
-on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-
-jobs:
-  sonarqube-pr:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-      with:
-        fetch-depth: 0
-    
-    - name: Set up JDK 11
-      uses: actions/setup-java@v3
-      with:
-        java-version: '11'
-        distribution: 'temurin'
-    
-    - name: SonarQube PR Analysis
-      run: |
-        mvn clean verify sonar:sonar \
-          -Dsonar.projectKey=my-java-project \
-          -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }} \
-          -Dsonar.login=${{ secrets.SONAR_TOKEN }} \
-          -Dsonar.pullrequest.key=${{ github.event.number }} \
-          -Dsonar.pullrequest.branch=${{ github.head_ref }} \
-          -Dsonar.pullrequest.base=${{ github.base_ref }}
 ```
 
-## 📈 실습 6: 분석 결과 해석
+## 📈 분석 결과 해석
 
-### 6-1. 주요 메트릭 이해
+### 주요 메트릭 이해
 - **Bugs**: 실제 버그로 이어질 수 있는 코드 이슈
 - **Vulnerabilities**: 보안 취약점
 - **Code Smells**: 코드 품질 이슈
 - **Coverage**: 테스트 커버리지
 - **Duplications**: 중복 코드 비율
 
-### 6-2. 이슈 분류 및 우선순위
+### 이슈 분류 및 우선순위
 1. **Blocker**: 즉시 수정 필요
 2. **Critical**: 높은 우선순위
 3. **Major**: 중간 우선순위
 4. **Minor**: 낮은 우선순위
 5. **Info**: 정보성
 
-### 6-3. 기술 부채 관리
+### 기술 부채 관리
 - **Technical Debt**: 수정에 필요한 예상 시간
 - **Debt Ratio**: 전체 코드 대비 기술 부채 비율
 - **SQALE Rating**: 유지보수성 등급
 
-## 🧹 실습 7: 리소스 정리
+## 🧹 리소스 정리
 
-### 7-1. SonarQube 삭제
+### SonarQube 삭제
 ```bash
 helm uninstall sonarqube -n sonarqube
 ```
 
-### 7-2. PVC 삭제
+### PVC 삭제
 ```bash
 kubectl delete pvc --all -n sonarqube
 ```
 
-### 7-3. 네임스페이스 삭제
+### 네임스페이스 삭제
 ```bash
 kubectl delete namespace sonarqube
 ```
