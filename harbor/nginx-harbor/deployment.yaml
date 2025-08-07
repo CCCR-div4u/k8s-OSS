@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-harbor
+  labels:
+    app: nginx-harbor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx-harbor
+  template:
+    metadata:
+      labels:
+        app: nginx-harbor
+    spec:
+      imagePullSecrets:
+        - name: harbor-secret  # Harbor 로그인 정보 시크릿 이름
+      containers:
+        - name: nginx
+          image: harbor.bluesunnywings.com/library/nginx:1.0
+          ports:
+            - containerPort: 80
