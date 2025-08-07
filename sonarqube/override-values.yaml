@@ -1,0 +1,22 @@
+# sonarqube-2025.1.0.tgz
+---
+community:
+  enabled: true
+  buildNumber: "25.1.0.102122"
+# edition: "developer"
+monitoringPasscode: "P@ssw0rd!@"
+ingress:
+  enabled: true
+  # Used to create an Ingress record.
+  hosts:
+    - name: "sonarqube.bluesunnywings.com"
+      path: /
+      pathType: Prefix
+  annotations:
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/group.name: common-ingress
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:ap-northeast-2:219967435143:certificate/5d011410-cf0a-4412-94fd-9482bed70ef8"
+    external-dns.alpha.kubernetes.io/hostname: sonarqube.bluesunnywings.com
+  ingressClassName: alb
