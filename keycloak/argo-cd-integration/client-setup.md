@@ -6,7 +6,7 @@
 
 ### 1. 관리자 콘솔 접속
 
-1. https://keycloak.your-domain.com/admin/ 접속
+1. https://keycloak.bluesunnywings.com/admin/ 접속
 2. 관리자 계정으로 로그인
 3. 적절한 Realm 선택 (예: `test1`)
 
@@ -34,19 +34,19 @@
 
 다음 URL들을 정확히 입력합니다:
 
-- **Root URL**: `https://argocd.your-domain.com`
-- **Home URL**: `https://argocd.your-domain.com`
+- **Root URL**: `https://argocd.bluesunnywings.com`
+- **Home URL**: `https://argocd.bluesunnywings.com`
 - **Valid redirect URIs**: 
   ```
-  https://argocd.your-domain.com/auth/callback
+  https://argocd.bluesunnywings.com/auth/callback
   ```
 - **Valid post logout redirect URIs**:
   ```
-  https://argocd.your-domain.com/auth/logout
+  https://argocd.bluesunnywings.com/auth/logout
   ```
 - **Web origins**: 
   ```
-  https://argocd.your-domain.com
+  https://argocd.bluesunnywings.com
   ```
   또는 `+` (자동 설정)
 
@@ -100,9 +100,9 @@
 - [ ] **Implicit Flow**: `Off`
 
 ### URL 설정
-- [ ] **Root URL**: `https://argocd.your-domain.com`
-- [ ] **Valid redirect URIs**: `https://argocd.your-domain.com/auth/callback`
-- [ ] **Web origins**: `https://argocd.your-domain.com` 또는 `+`
+- [ ] **Root URL**: `https://argocd.bluesunnywings.com`
+- [ ] **Valid redirect URIs**: `https://argocd.bluesunnywings.com/auth/callback`
+- [ ] **Web origins**: `https://argocd.bluesunnywings.com` 또는 `+`
 
 ### 보안 설정
 - [ ] **Client Secret** 확인 및 복사 완료

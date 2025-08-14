@@ -22,10 +22,10 @@ kubectl -n argo-cd edit configmap argocd-cm
 
 ```yaml
 data:
-  url: https://argocd.your-domain.com
+  url: https://argocd.bluesunnywings.com
   oidc.config: |
     name: Keycloak
-    issuer: https://keycloak.your-domain.com/realms/your-realm
+    issuer: https://keycloak.bluesunnywings.com/realms/test1
     clientID: argocd
     enablePKCEAuthentication: false  # PKCE 비활성화 (문제 해결용)
     requestedScopes: ["openid", "profile", "email", "groups"]
@@ -69,14 +69,14 @@ kubectl -n argo-cd rollout status deployment/argo-cd-argocd-server
 
 1. **Keycloak 클라이언트 설정**에서 추가 redirect URI 등록:
    ```
-   https://argocd.your-domain.com/pkce/verify
+   https://argocd.bluesunnywings.com/pkce/verify
    ```
 
 2. **Argo CD 설정**에서 PKCE 활성화:
    ```yaml
    oidc.config: |
      name: Keycloak
-     issuer: https://keycloak.your-domain.com/realms/your-realm
+     issuer: https://keycloak.bluesunnywings.com/realms/test1
      clientID: argocd
      enablePKCEAuthentication: true
      requestedScopes: ["openid", "profile", "email", "groups"]
@@ -89,7 +89,7 @@ kubectl -n argo-cd rollout status deployment/argo-cd-argocd-server
 ```yaml
 oidc.config: |
   name: Keycloak
-  issuer: https://keycloak.your-domain.com/realms/your-realm
+  issuer: https://keycloak.bluesunnywings.com/realms/test1
   clientID: argocd
   enablePKCEAuthentication: false
   requestedScopes: ["openid", "profile", "email", "groups"]
@@ -133,7 +133,7 @@ Keycloak에서 사용자가 적절한 그룹에 속해 있는지 확인:
 
 ### 1. 로그인 테스트
 
-1. https://argocd.your-domain.com 접속
+1. https://argocd.bluesunnywings.com 접속
 2. **LOG IN VIA KEYCLOAK** 버튼 클릭
 3. Keycloak 로그인 페이지에서 인증
 4. Argo CD 대시보드로 리다이렉트 확인

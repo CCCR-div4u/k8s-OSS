@@ -29,7 +29,7 @@ kubectl create namespace keycloak
 [helm-values.yaml](helm-values.yaml) 파일을 참조하여 환경에 맞게 수정합니다.
 
 주요 설정 항목:
-- **도메인**: `hostname: keycloak.your-domain.com`
+- **도메인**: `hostname: keycloak.bluesunnywings.com`
 - **SSL 인증서**: `alb.ingress.kubernetes.io/certificate-arn`
 - **관리자 계정**: `auth.adminUser`, `auth.adminPassword`
 
@@ -58,7 +58,7 @@ kubectl -n keycloak get svc
 
 ### 1. 관리자 콘솔 접속
 
-- URL: https://keycloak.your-domain.com/admin/
+- URL: https://keycloak.bluesunnywings.com/admin/
 - 사용자명: admin (기본값)
 - 비밀번호: helm-values.yaml에서 설정한 값
 

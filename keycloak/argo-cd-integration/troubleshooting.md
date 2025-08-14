@@ -8,7 +8,7 @@
 
 **증상**: Keycloak 로그에 다음과 같은 오류가 나타남
 ```
-type="LOGIN_ERROR", error="invalid_redirect_uri", redirect_uri="https://argocd.example.com/auth/callback"
+type="LOGIN_ERROR", error="invalid_redirect_uri", redirect_uri="https://argocd.bluesunnywings.com/auth/callback"
 ```
 
 **원인**: Keycloak 클라이언트에 등록된 redirect URI와 Argo CD가 보내는 redirect URI가 일치하지 않음
@@ -17,15 +17,15 @@ type="LOGIN_ERROR", error="invalid_redirect_uri", redirect_uri="https://argocd.e
 
 1. **Argo CD가 보내는 실제 redirect_uri 확인**:
    ```bash
-   curl -s "https://argocd.example.com/auth/login" | grep -o "redirect_uri=[^&]*"
+   curl -s "https://argocd.bluesunnywings.com/auth/login" | grep -o "redirect_uri=[^&]*"
    ```
 
 2. **Keycloak 클라이언트 설정 확인**:
    - Keycloak 관리 콘솔 → Clients → argocd → Settings
    - **Valid redirect URIs**에 다음 추가:
      ```
-     https://argocd.example.com/auth/callback
-     https://argocd.example.com/pkce/verify  # PKCE 사용 시
+     https://argocd.bluesunnywings.com/auth/callback
+     https://argocd.bluesunnywings.com/pkce/verify  # PKCE 사용 시
      ```
 
 3. **URL 정확성 체크**:
@@ -83,7 +83,7 @@ failed to get token: oauth2: "unauthorized_client" "Invalid client or Invalid cl
    ```yaml
    oidc.config: |
      name: Keycloak
-     issuer: https://keycloak.example.com/realms/test1
+     issuer: https://keycloak.bluesunnywings.com/realms/test1
      clientID: argocd
      enablePKCEAuthentication: false
      requestedScopes: ["openid", "profile", "email", "groups"]
@@ -92,7 +92,7 @@ failed to get token: oauth2: "unauthorized_client" "Invalid client or Invalid cl
 2. **근본 해결**: PKCE용 redirect URI 추가
    - Keycloak 클라이언트 설정에서 **Valid redirect URIs**에 추가:
      ```
-     https://argocd.example.com/pkce/verify
+     https://argocd.bluesunnywings.com/pkce/verify
      ```
 
 ### 4. External Secrets 동기화 문제
@@ -165,16 +165,16 @@ kubectl -n argo-cd get externalsecret argocd-keycloak -o yaml
 **Keycloak 접근성 테스트**:
 ```bash
 # Keycloak 서버 응답 확인
-curl -I https://keycloak.example.com
+curl -I https://keycloak.bluesunnywings.com
 
 # OIDC 엔드포인트 확인
-curl -k "https://keycloak.example.com/realms/test1"
+curl -k "https://keycloak.bluesunnywings.com/realms/test1"
 ```
 
 **Argo CD에서 Keycloak 접근 테스트**:
 ```bash
 # Argo CD Pod에서 테스트
-kubectl -n argo-cd exec -it deployment/argo-cd-argocd-server -- curl -I https://keycloak.example.com
+kubectl -n argo-cd exec -it deployment/argo-cd-argocd-server -- curl -I https://keycloak.bluesunnywings.com
 ```
 
 ## 📋 체크리스트
