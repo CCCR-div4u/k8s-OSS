@@ -1,0 +1,20 @@
+# Checkov 스캔 결과 파일들
+checkov-*.md
+checkov-*.log
+checkov-results.*
+rendered.yaml
+
+# Helm 임시 파일들
+*.tgz
+charts/
+
+# IDE 설정 파일들
+.vscode/
+.idea/
+
+# 로그 파일들
+*.log
+
+# 임시 파일들
+*.tmp
+*.temp
