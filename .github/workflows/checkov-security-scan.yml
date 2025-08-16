@@ -32,6 +32,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # ── 디렉터리별: 차트/값 파일 지정 ──
           - name: argo-cd
             chart_ref: argo/argo-cd
             values: "argo-cd/my-values.yaml"
@@ -52,9 +53,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Helm v3 설치
       - name: Setup Helm
         uses: azure/setup-helm@v4
 
+      # 필요한 차트 리포 등록
       - name: Add Helm repos
         run: |
           helm repo add bitnami https://charts.bitnami.com/bitnami
@@ -68,6 +71,7 @@ jobs:
         run: |
           mkdir -p rendered results
 
+      # values가 존재할 때만 -f 로 붙여서 렌더
       - name: Helm template (${{ matrix.name }})
         env:
           NAME: ${{ matrix.name }}
@@ -88,9 +92,10 @@ jobs:
             --namespace "$NAME" \
             --create-namespace \
             > "rendered/${NAME}.yaml"
+          # 빈 파일 방지
           test -s "rendered/${NAME}.yaml"
 
-      # 컨테이너 기반 Checkov 액션(도커 내부)
+      # 컨테이너 기반 Checkov 액션으로 렌더 결과 스캔
       - name: Run Checkov on rendered/${{ matrix.name }}.yaml
         uses: bridgecrewio/checkov-action@v12
         with:
@@ -98,26 +103,36 @@ jobs:
           framework: kubernetes
           quiet: true
           output_format: sarif
-          # 결과 파일은 미리 만들어둔 results/ 밑으로
           output_file_path: results/${{ matrix.name }}.sarif
           soft_fail: false
 
-      # 업로드 전에 결과 파일이 진짜 있는지 검사(디버깅용 로그 포함)
-      - name: Inspect SARIF
+      # 업로드 전 결과 파일 유효성/디버그
+      - name: Inspect SARIF (debug)
+        if: always()
         run: |
-          ls -l results || true
-          test -s "results/${{ matrix.name }}.sarif"
+          ls -lah results || true
+          FILE="results/${{ matrix.name }}.sarif"
+          if [ ! -s "$FILE" ]; then
+            echo "::warning::No SARIF produced at $FILE (missing or empty)."
+            exit 0
+          fi
+          echo "SARIF size: $(wc -c < "$FILE") bytes"
+          head -n 20 "$FILE" | sed -e 's/::/--/g' || true
 
+      # 포크 PR이면 권한 제한으로 실패하니 업로드 스킵
       - name: Upload SARIF (${{ matrix.name }})
+        if: |
+          always() && (github.event_name != 'pull_request' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == false))
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: results/${{ matrix.name }}.sarif
           category: checkov-${{ matrix.name }}
 
-  # (옵션) 포크에서 온 PR은 업로드 스킵 — 권한 문제 회피
-  # 필요 시 위 잡에 if 조건으로 합쳐도 됩니다.
-  render-and-scan-from-fork:
-    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork }}
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "Fork PR detected → skip SARIF upload (limited GITHUB_TOKEN)."
+      # 업로드 실패/스킵하더라도 파일은 아티팩트로 보존
+      - name: Upload SARIF as artifact (fallback)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sarif-${{ matrix.name }}
+          path: results/${{ matrix.name }}.sarif
+          if-no-files-found: warn
