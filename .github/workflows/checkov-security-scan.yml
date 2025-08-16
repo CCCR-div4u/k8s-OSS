@@ -1,0 +1,336 @@
+name: 🛡️ Checkov Security Scan
+
+# 트리거 조건: k8s-OSS 디렉터리 변경 시에만 실행
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'k8s-OSS/**'                    # k8s-OSS 디렉터리 변경 시만
+      - '.github/workflows/checkov-security-scan.yml'  # 워크플로우 파일 변경 시
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'k8s-OSS/**'
+  workflow_dispatch:                    # 수동 실행 가능
+
+# 동시 실행 제어 (같은 브랜치에서 중복 실행 방지)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checkov-scan:
+    name: Checkov Security Analysis
+    runs-on: ubuntu-latest
+    
+    # 권한 설정 (SARIF 업로드를 위해 필요)
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+      actions: read
+    
+    steps:
+    # 1. 코드 체크아웃
+    - name: 📥 Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0                  # 전체 히스토리 가져오기 (더 정확한 분석)
+
+    # 2. Checkov 공식 액션으로 보안 스캔 실행
+    - name: 🔍 Run Checkov Security Scan
+      id: checkov
+      uses: bridgecrewio/checkov-action@master
+      with:
+        # 스캔 대상 설정
+        directory: k8s-OSS               # k8s-OSS 디렉터리만 스캔
+        framework: kubernetes,helm,dockerfile,yaml  # 지원 프레임워크
+        
+        # 출력 설정
+        output_format: sarif,json,cli    # 다중 출력 형식
+        output_file_path: |
+          checkov-results.sarif
+          checkov-results.json
+          checkov-results.txt
+        
+        # 실행 옵션
+        soft_fail: true                  # PR에서는 실패해도 계속 진행
+        quiet: false                     # 상세 로그 출력
+        download_external_modules: true  # 외부 모듈 다운로드
+        log_level: INFO                  # 로그 레벨
+        
+        # 필터링 옵션
+        skip_check: |                    # 제외할 검사 (필요시 추가)
+          CKV_K8S_43
+          CKV_K8S_35
+        
+        # 심각도 필터 (선택사항)
+        # check_severity: HIGH,CRITICAL
+        
+        # 추가 설정
+        config_file: k8s-OSS/.checkov.yml  # 설정 파일 (있는 경우)
+
+    # 3. GitHub Security Tab에 SARIF 업로드
+    - name: 📊 Upload SARIF to GitHub Security
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: checkov-results.sarif
+        category: checkov-k8s-oss
+
+    # 4. 결과 파일들을 Artifacts로 저장
+    - name: 📁 Upload Checkov Results as Artifacts
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: checkov-security-results-${{ github.run_number }}
+        path: |
+          checkov-results.sarif
+          checkov-results.json
+          checkov-results.txt
+        retention-days: 90
+
+    # 5. 결과 요약 생성 및 출력 변수 설정
+    - name: 📊 Parse Checkov Results
+      id: parse_results
+      if: always()
+      run: |
+        if [ -f "checkov-results.json" ]; then
+          # 기본 요약 정보
+          PASSED=$(jq -r '.summary.passed // 0' checkov-results.json)
+          FAILED=$(jq -r '.summary.failed // 0' checkov-results.json)
+          SKIPPED=$(jq -r '.summary.skipped // 0' checkov-results.json)
+          
+          echo "passed_checks=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed_checks=$FAILED" >> $GITHUB_OUTPUT
+          echo "skipped_checks=$SKIPPED" >> $GITHUB_OUTPUT
+          
+          # 심각도별 분류
+          CRITICAL=$(jq '[.results.failed_checks[]? | select(.severity == "CRITICAL")] | length' checkov-results.json)
+          HIGH=$(jq '[.results.failed_checks[]? | select(.severity == "HIGH")] | length' checkov-results.json)
+          MEDIUM=$(jq '[.results.failed_checks[]? | select(.severity == "MEDIUM")] | length' checkov-results.json)
+          LOW=$(jq '[.results.failed_checks[]? | select(.severity == "LOW")] | length' checkov-results.json)
+          
+          echo "critical_issues=$CRITICAL" >> $GITHUB_OUTPUT
+          echo "high_issues=$HIGH" >> $GITHUB_OUTPUT
+          echo "medium_issues=$MEDIUM" >> $GITHUB_OUTPUT
+          echo "low_issues=$LOW" >> $GITHUB_OUTPUT
+          
+          # 콘솔 출력
+          echo "📊 Checkov Scan Summary:"
+          echo "  ✅ Passed: $PASSED"
+          echo "  ❌ Failed: $FAILED"
+          echo "  ⏭️ Skipped: $SKIPPED"
+          echo ""
+          echo "🎯 Issues by Severity:"
+          echo "  🚨 Critical: $CRITICAL"
+          echo "  ⚠️ High: $HIGH"
+          echo "  📝 Medium: $MEDIUM"
+          echo "  ℹ️ Low: $LOW"
+          
+          # 전체 점수 계산 (선택사항)
+          TOTAL_CHECKS=$((PASSED + FAILED))
+          if [ $TOTAL_CHECKS -gt 0 ]; then
+            PASS_RATE=$((PASSED * 100 / TOTAL_CHECKS))
+            echo "📈 Pass Rate: $PASS_RATE%"
+            echo "pass_rate=$PASS_RATE" >> $GITHUB_OUTPUT
+          fi
+        else
+          echo "⚠️ Checkov results file not found"
+          echo "failed_checks=0" >> $GITHUB_OUTPUT
+          echo "critical_issues=0" >> $GITHUB_OUTPUT
+        fi
+
+    # 6. Pull Request에 결과 코멘트 추가
+    - name: 💬 Comment PR with Security Results
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          
+          try {
+            // 결과 파일 읽기
+            const results = JSON.parse(fs.readFileSync('checkov-results.json', 'utf8'));
+            const summary = results.summary || {};
+            
+            const passed = summary.passed || 0;
+            const failed = summary.failed || 0;
+            const skipped = summary.skipped || 0;
+            
+            // 심각도별 분류
+            const failedChecks = results.results?.failed_checks || [];
+            const critical = failedChecks.filter(check => check.severity === 'CRITICAL').length;
+            const high = failedChecks.filter(check => check.severity === 'HIGH').length;
+            const medium = failedChecks.filter(check => check.severity === 'MEDIUM').length;
+            const low = failedChecks.filter(check => check.severity === 'LOW').length;
+            
+            // 상태 결정
+            let statusEmoji = '✅';
+            let statusText = 'All Clear!';
+            let statusColor = '28a745'; // 녹색
+            
+            if (critical > 0) {
+              statusEmoji = '🚨';
+              statusText = 'Critical Issues Found!';
+              statusColor = 'dc3545'; // 빨간색
+            } else if (high > 0) {
+              statusEmoji = '⚠️';
+              statusText = 'High Priority Issues Found!';
+              statusColor = 'fd7e14'; // 주황색
+            } else if (failed > 0) {
+              statusEmoji = '📝';
+              statusText = 'Issues Found';
+              statusColor = 'ffc107'; // 노란색
+            }
+            
+            // 통과율 계산
+            const totalChecks = passed + failed;
+            const passRate = totalChecks > 0 ? Math.round((passed / totalChecks) * 100) : 0;
+            
+            // PR 코멘트 생성
+            const comment = `## ${statusEmoji} Checkov Security Scan Results
+            
+            ![Status](https://img.shields.io/badge/Status-${encodeURIComponent(statusText)}-${statusColor})
+            ![Pass Rate](https://img.shields.io/badge/Pass%20Rate-${passRate}%25-${passRate >= 80 ? '28a745' : passRate >= 60 ? 'ffc107' : 'dc3545'})
+            
+            ### 📊 Summary
+            | Category | Count | Percentage |
+            |----------|-------|------------|
+            | ✅ Passed | ${passed} | ${totalChecks > 0 ? Math.round((passed/totalChecks)*100) : 0}% |
+            | ❌ Failed | ${failed} | ${totalChecks > 0 ? Math.round((failed/totalChecks)*100) : 0}% |
+            | ⏭️ Skipped | ${skipped} | - |
+            | **Total** | **${totalChecks}** | **100%** |
+            
+            ### 🎯 Issues by Severity
+            | Severity | Count | Priority |
+            |----------|-------|----------|
+            | 🚨 Critical | ${critical} | Must Fix |
+            | ⚠️ High | ${high} | Should Fix |
+            | 📝 Medium | ${medium} | Consider Fix |
+            | ℹ️ Low | ${low} | Optional |
+            
+            ${failed > 0 ? `
+            ### 🔍 Top Failed Checks
+            ${failedChecks.slice(0, 3).map((check, index) => 
+              `#### ${index + 1}. ${check.severity} - ${check.check_id}
+            **${check.check_name}**
+            - 📁 File: \`${check.file_path}\`
+            - 📍 Line: ${check.file_line_range ? check.file_line_range.join('-') : 'N/A'}
+            - 🔗 [More Info](${check.guideline || '#'})
+            `
+            ).join('\n')}
+            
+            ${failedChecks.length > 3 ? `<details><summary>📋 View ${failedChecks.length - 3} more issues...</summary>\n\n${failedChecks.slice(3).map((check, index) => `${index + 4}. **${check.check_id}**: ${check.check_name} (${check.file_path})`).join('\n')}\n\n</details>` : ''}
+            ` : '### 🎉 No Security Issues Found!\nGreat job maintaining secure infrastructure code! 👏'}
+            
+            ### 📋 Next Steps
+            ${critical > 0 ? '- 🚨 **Fix Critical issues immediately** - These pose serious security risks' : ''}
+            ${high > 0 ? '- ⚠️ **Address High priority issues** - These should be fixed before merging' : ''}
+            ${medium > 0 ? '- 📝 **Review Medium priority issues** - Consider fixing these for better security' : ''}
+            - 📊 [View detailed results in Security tab](${context.payload.repository.html_url}/security/code-scanning)
+            - 📁 [Download full report from Artifacts](${context.payload.repository.html_url}/actions/runs/${context.runId})
+            
+            ---
+            <sub>🤖 Automated security scan by [Checkov](https://www.checkov.io/) | Run #${context.runNumber} | Scanned ${totalChecks} checks</sub>`;
+            
+            // 기존 코멘트 찾기 및 업데이트
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            
+            const botComment = comments.find(comment => 
+              comment.user.type === 'Bot' && 
+              comment.body.includes('Checkov Security Scan Results')
+            );
+            
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: comment
+              });
+              console.log('✅ Updated existing PR comment');
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: comment
+              });
+              console.log('✅ Created new PR comment');
+            }
+            
+          } catch (error) {
+            console.error('❌ Error processing Checkov results:', error);
+            
+            // 에러 발생 시 기본 코멘트
+            const errorComment = `## ⚠️ Checkov Security Scan
+            
+            ❌ **Error occurred while processing scan results**
+            
+            \`\`\`
+            ${error.message}
+            \`\`\`
+            
+            Please check the [workflow logs](${context.payload.repository.html_url}/actions/runs/${context.runId}) for details.
+            
+            ---
+            <sub>🤖 Automated security scan by Checkov | Run #${context.runNumber}</sub>`;
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: errorComment
+            });
+          }
+
+    # 7. 심각한 보안 문제 발견 시 실패 처리 (메인 브랜치에서만)
+    - name: 🚨 Fail on Critical Security Issues
+      if: |
+        github.ref == 'refs/heads/main' && 
+        steps.parse_results.outputs.critical_issues > 0
+      run: |
+        echo "🚨 Critical security issues found: ${{ steps.parse_results.outputs.critical_issues }}"
+        echo "❌ Workflow will fail due to critical security vulnerabilities in main branch"
+        echo "🔍 Please review the Security tab and fix critical issues immediately"
+        exit 1
+
+    # 8. 스캔 완료 요약
+    - name: ✅ Security Scan Summary
+      if: always()
+      run: |
+        echo "🎉 Checkov security scan completed!"
+        echo ""
+        echo "📊 Final Results:"
+        echo "  ✅ Passed: ${{ steps.parse_results.outputs.passed_checks || 0 }}"
+        echo "  ❌ Failed: ${{ steps.parse_results.outputs.failed_checks || 0 }}"
+        echo "  ⏭️ Skipped: ${{ steps.parse_results.outputs.skipped_checks || 0 }}"
+        echo ""
+        echo "🎯 Security Issues:"
+        echo "  🚨 Critical: ${{ steps.parse_results.outputs.critical_issues || 0 }}"
+        echo "  ⚠️ High: ${{ steps.parse_results.outputs.high_issues || 0 }}"
+        echo "  📝 Medium: ${{ steps.parse_results.outputs.medium_issues || 0 }}"
+        echo "  ℹ️ Low: ${{ steps.parse_results.outputs.low_issues || 0 }}"
+        echo ""
+        
+        if [ "${{ steps.parse_results.outputs.failed_checks || 0 }}" -gt 0 ]; then
+          echo "🔧 Action Required:"
+          echo "  - Review failed security checks"
+          echo "  - Fix critical and high priority issues"
+          echo "  - Check Security tab for detailed guidance"
+        else
+          echo "🎉 Excellent! No security issues found!"
+          echo "  - Your infrastructure code follows security best practices"
+          echo "  - Keep up the great work! 👏"
+        fi
+        
+        echo ""
+        echo "📋 Resources:"
+        echo "  - Security Tab: ${{ github.server_url }}/${{ github.repository }}/security/code-scanning"
+        echo "  - Artifacts: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        echo "  - Checkov Docs: https://www.checkov.io/"
