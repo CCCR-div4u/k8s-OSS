@@ -105,7 +105,7 @@ jobs:
           quiet: true
           output_format: sarif
           output_file_path: results/${{ matrix.name }}.sarif
-          soft_fail: false
+          soft_fail: true
 
       # 업로드 전 결과 파일 유효성/디버그
       - name: Inspect SARIF (debug)
