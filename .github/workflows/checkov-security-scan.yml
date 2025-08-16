@@ -1,33 +1,110 @@
-name: Checkov
+name: Render Helm → Checkov (Kubernetes)
 
 on:
-  push:
   pull_request:
+    paths:
+      - "argo-cd/**"
+      - "harbor/**"
+      - "keycloak/**"
+      - "sonarqube/**"
+      - "thanos/**"
+  push:
+    branches: [ main ]
+    paths:
+      - "argo-cd/**"
+      - "harbor/**"
+      - "keycloak/**"
+      - "sonarqube/**"
+      - "thanos/**"
 
 permissions:
   contents: read
-  security-events: write  # SARIF 업로드에 필요
+  security-events: write
+
+concurrency:
+  group: checkov-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  checkov:
+  render-and-scan:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ── 디렉터리별: 차트/값 파일 지정 ──
+          - name: argo-cd
+            chart_ref: argo/argo-cd
+            values: "argo-cd/my-values.yaml"
+          - name: harbor
+            chart_ref: goharbor/harbor
+            values: "harbor/override-values.yaml"
+          - name: keycloak
+            chart_ref: bitnami/keycloak
+            values: "keycloak/installation/helm-values.yaml"
+          - name: sonarqube
+            chart_ref: sonarqube/sonarqube
+            values: "sonarqube/override-values.yaml"
+          - name: thanos
+            chart_ref: bitnami/thanos
+            values: "thanos/values/values.yaml"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Checkov 실행 (K8s/Helm/Dockerfile 대상)
-      - name: Run Checkov
+      # 1) Helm 설치 및 리포 추가(버전 고정 원하면 --version 사용)
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      - name: Add Helm repos
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo add goharbor https://helm.goharbor.io
+          helm repo add argo https://argoproj.github.io/argo-helm
+          helm repo add sonarqube https://SonarSource.github.io/helm-chart-sonarqube
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm repo update
+
+      # 2) values가 있을 때만 -f로 붙여 렌더
+      - name: Helm template (${{ matrix.name }})
+        env:
+          NAME: ${{ matrix.name }}
+          CHART: ${{ matrix.chart_ref }}
+          VALUES: ${{ matrix.values }}
+        run: |
+          set -euo pipefail
+          mkdir -p rendered results
+          VALUES_FLAGS=""
+          for v in $VALUES; do
+            if [ -f "$v" ]; then
+              echo "Using values: $v"
+              VALUES_FLAGS="$VALUES_FLAGS -f $v"
+            else
+              echo "Skip missing values: $v"
+            fi
+          done
+          helm template "$NAME" "$CHART" $VALUES_FLAGS \
+            --namespace "$NAME" \
+            --create-namespace \
+            > "rendered/${NAME}.yaml"
+          # 빈 파일 방지
+          test -s "rendered/${NAME}.yaml"
+
+      # 3) Checkov(도커 기반 액션)으로 렌더 결과를 K8s 프레임워크로 스캔
+      - name: Run Checkov on rendered/${{ matrix.name }}.yaml
         uses: bridgecrewio/checkov-action@v12
         with:
-          directory: .
-          framework: kubernetes,helm,dockerfile
+          directory: rendered
+          framework: kubernetes
           quiet: true
           output_format: sarif
-          output_file_path: results.sarif
-          soft_fail: false           # 실패 시 빌드 차단 (초기엔 .checkov.yaml로 완화 가능)
+          output_file_path: results/${{ matrix.name }}.sarif
+          soft_fail: false
 
-      # 결과를 GitHub Code Scanning으로 업로드
-      - name: Upload SARIF
+      # 4) SARIF 업로드(보안 탭 + PR 인라인 코멘트)
+      - name: Upload SARIF (${{ matrix.name }})
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: results.sarif
+          sarif_file: results/${{ matrix.name }}.sarif
+          category: checkov-${{ matrix.name }}
