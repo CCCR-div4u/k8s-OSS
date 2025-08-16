@@ -14,9 +14,12 @@ keycloak/
 │   ├── oidc-configuration.md          # Argo CD OIDC 설정
 │   ├── troubleshooting.md             # 문제 해결 가이드
 │   └── client-setup.md                # Keycloak 클라이언트 설정
-└── external-secrets/
-    ├── external-secret.yaml           # External Secret 설정
-    └── aws-secrets-manager.md         # AWS Secrets Manager 연동
+└── harbor-integration/
+    ├── client-setup.md                # Harbor 클라이언트 설정
+    ├── oidc-configuration.md          # Harbor OIDC 설정
+    ├── project-management.md          # 프로젝트 관리
+    ├── README.md                      # Harbor 연동 가이드
+    └── troubleshooting.md             # 문제 해결
 ```
 
 ## 🚀 빠른 시작
@@ -30,13 +33,12 @@ keycloak/
 - **AWS ALB Ingress** 를 통한 HTTPS 접근
 - **PostgreSQL** 데이터베이스 연동
 - **Argo CD OIDC** 인증 연동
-- **External Secrets** 를 통한 시크릿 관리
+- **Harbor OIDC** 인증 연동
 
 ## 📋 요구사항
 
 - Kubernetes 클러스터
 - AWS Load Balancer Controller
-- External Secrets Operator (선택사항)
 - Helm 3.x
 
 ## 🌐 접근 URL

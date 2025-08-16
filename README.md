@@ -24,8 +24,7 @@ Kubernetes 환경에서 운영할 수 있는 오픈소스 소프트웨어들의 
 - **[Keycloak](./keycloak/)**: 오픈소스 Identity and Access Management
   - OIDC 기반 Single Sign-On
   - Argo CD와 Harbor 연동
-  - External Secrets를 통한 시크릿 관리
-  - AWS Secrets Manager 통합
+  - 중앙 집중식 사용자 인증 및 권한 관리
 
 ### 📊 모니터링 및 관찰성
 - **[Monitoring & Observability](./monitoring_o11y/)**: LGTM 스택 기반 통합 모니터링
@@ -63,7 +62,7 @@ Kubernetes 환경에서 운영할 수 있는 오픈소스 소프트웨어들의 
 - TLS/SSL 인증서 자동 관리
 - OIDC 기반 통합 인증
 - Private Registry를 통한 이미지 보안
-- External Secrets를 통한 시크릿 관리
+- 중앙 집중식 인증 및 권한 관리
 
 ## 🚀 빠른 시작
 
@@ -140,7 +139,7 @@ k8s-OSS/
 ### 보안
 - Keycloak을 통한 중앙 집중식 인증
 - Harbor를 통한 컨테이너 이미지 보안 스캔
-- External Secrets를 통한 시크릿 자동 관리
+- OIDC 기반 통합 인증 시스템
 
 ### CI/CD
 - Argo CD를 통한 GitOps 기반 배포
