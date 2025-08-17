@@ -1,0 +1,57 @@
+# 간단한 k6 테스트 예제
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: simple-test-script
+  namespace: k6-operator-system
+data:
+  test.js: |
+    import http from 'k6/http';
+    import { check, sleep } from 'k6';
+
+    export let options = {
+      vus: 10,           // 가상 사용자 수
+      duration: '30s',   // 테스트 지속 시간
+      thresholds: {
+        http_req_duration: ['p(95)<500'],  // 95%의 요청이 500ms 이하
+        http_req_failed: ['rate<0.1'],     // 실패율 10% 이하
+      },
+    };
+
+    export default function() {
+      // 테스트할 URL (수정 필요)
+      let response = http.get('https://httpbin.org/get');
+      
+      // 응답 검증
+      check(response, {
+        'status is 200': (r) => r.status === 200,
+        'response time < 500ms': (r) => r.timings.duration < 500,
+      });
+      
+      sleep(1);
+    }
+
+---
+# k6 테스트 실행
+apiVersion: k6.io/v1alpha1
+kind: K6
+metadata:
+  name: simple-load-test
+  namespace: k6-operator-system
+spec:
+  parallelism: 2  # 병렬 실행할 Pod 수
+  script:
+    configMap:
+      name: simple-test-script
+      file: test.js
+  arguments: --vus=10 --duration=30s
+  
+  # 리소스 제한 (선택사항)
+  runner:
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
