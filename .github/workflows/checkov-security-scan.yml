@@ -391,12 +391,14 @@ jobs:
         if: always() && steps.openai-analysis.outputs.issue_count != '0' && env.SLACK_WEBHOOK_URL != ''
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          ANALYSIS_RESULT: ${{ steps.openai-analysis.outputs.analysis_result }}
+          COMPONENT: ${{ matrix.name }}
+          ISSUE_COUNT: ${{ steps.openai-analysis.outputs.issue_count }}
         run: |
-          ANALYSIS="${{ steps.openai-analysis.outputs.analysis_result }}"
-          COMPONENT="${{ matrix.name }}"
-          ISSUE_COUNT="${{ steps.openai-analysis.outputs.issue_count }}"
+          # 분석 결과를 파일로 저장 (특수 문자 안전 처리)
+          echo "$ANALYSIS_RESULT" > analysis_result.txt
           
-          # Slack 메시지 생성
+          # Slack 메시지 생성 (분석 결과는 요약만 포함)
           cat > slack_message.json << EOF
           {
             "text": "🔒 Kubernetes 보안 검사 결과",
@@ -421,7 +423,11 @@ jobs:
                   },
                   {
                     "type": "mrkdwn",
-                    "text": "*워크플로우:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|보기>"
+                    "text": "*실행 시간:* $(date '+%Y-%m-%d %H:%M')"
+                  },
+                  {
+                    "type": "mrkdwn",
+                    "text": "*워크플로우:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|GitHub에서 확인>"
                   }
                 ]
               },
@@ -429,7 +435,7 @@ jobs:
                 "type": "section",
                 "text": {
                   "type": "mrkdwn",
-                  "text": "\`\`\`${ANALYSIS}\`\`\`"
+                  "text": "📋 *보안 검사 완료*\n보안 이슈 ${ISSUE_COUNT}개가 발견되었습니다.\n상세 분석 결과는 GitHub Actions에서 확인하세요."
                 }
               }
             ]
