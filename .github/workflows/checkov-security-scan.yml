@@ -174,7 +174,7 @@ jobs:
           CHART: ${{ matrix.chart_ref }}
           VALUES: ${{ matrix.values }}
         run: |
-          set -euo pipefail
+          set -eu
           VALUES_FLAGS=""
           for v in $VALUES; do
             if [ -f "$v" ]; then
