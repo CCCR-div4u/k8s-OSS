@@ -1,0 +1,93 @@
+# EKS 전용 Kube-bench 설정 파일
+# 이 설정은 AWS EKS 클러스터에 최적화되어 있습니다.
+
+# 벤치마크 버전
+benchmark_version: "eks-1.2.0"
+
+# 타겟 설정
+targets:
+  - master
+  - node
+  - policies
+
+# EKS 특화 설정
+eks:
+  # 관리형 서비스로 인해 접근할 수 없는 검사들 제외
+  skip_checks:
+    - "1.1.1"   # API server pod specification file permissions
+    - "1.1.2"   # API server pod specification file ownership
+    - "1.1.3"   # Controller manager pod specification file permissions
+    - "1.1.4"   # Controller manager pod specification file ownership
+    - "1.1.5"   # Scheduler pod specification file permissions
+    - "1.1.6"   # Scheduler pod specification file ownership
+    - "1.1.7"   # etcd pod specification file permissions
+    - "1.1.8"   # etcd pod specification file ownership
+    - "1.1.9"   # Container Network Interface file permissions
+    - "1.1.10"  # Container Network Interface file ownership
+    - "1.1.11"  # etcd data directory permissions
+    - "1.1.12"  # etcd data directory ownership
+
+# 출력 설정
+output:
+  format: "json"
+  file: "/tmp/kube-bench-results.json"
+
+# 로깅 설정
+logging:
+  level: "info"
+  format: "text"
+
+# 노드 선택자
+node_selector:
+  kubernetes.io/os: linux
+
+# 허용 오차 (tolerations)
+tolerations:
+  - key: "node-role.kubernetes.io/master"
+    operator: "Exists"
+    effect: "NoSchedule"
+  - key: "node-role.kubernetes.io/control-plane"
+    operator: "Exists"
+    effect: "NoSchedule"
+
+# 리소스 제한
+resources:
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+
+# 보안 컨텍스트
+security_context:
+  run_as_user: 0
+  run_as_group: 0
+  fs_group: 0
+  privileged: true
+
+# 볼륨 마운트 설정
+volume_mounts:
+  - name: "var-lib-etcd"
+    mount_path: "/var/lib/etcd"
+    read_only: true
+  - name: "var-lib-kubelet"
+    mount_path: "/var/lib/kubelet"
+    read_only: true
+  - name: "etc-kubernetes"
+    mount_path: "/etc/kubernetes"
+    read_only: true
+  - name: "usr-bin"
+    mount_path: "/usr/local/mount-from-host/bin"
+    read_only: true
+
+# 호스트 경로 설정
+host_paths:
+  - name: "var-lib-etcd"
+    path: "/var/lib/etcd"
+  - name: "var-lib-kubelet"
+    path: "/var/lib/kubelet"
+  - name: "etc-kubernetes"
+    path: "/etc/kubernetes"
+  - name: "usr-bin"
+    path: "/usr/bin"

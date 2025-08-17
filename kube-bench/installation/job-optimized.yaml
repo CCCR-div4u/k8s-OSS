@@ -1,0 +1,132 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kube-bench-comprehensive
+  namespace: default
+  labels:
+    app: kube-bench
+    type: comprehensive-audit
+  annotations:
+    description: "Comprehensive security benchmark for all node types"
+spec:
+  # 병렬 실행으로 성능 최적화
+  parallelism: 3
+  completions: 3
+  backoffLimit: 2
+  activeDeadlineSeconds: 1800  # 30분 타임아웃
+  
+  template:
+    metadata:
+      labels:
+        app: kube-bench
+    spec:
+      restartPolicy: Never
+      hostPID: true
+      
+      # 노드 타입별 분산 실행
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values: ["kube-bench"]
+              topologyKey: kubernetes.io/hostname
+      
+      tolerations:
+      - operator: Exists
+      
+      containers:
+      - name: kube-bench
+        image: aquasec/kube-bench:latest
+        command: ["/bin/sh"]
+        args:
+        - -c
+        - |
+          echo "🚀 Starting comprehensive kube-bench audit..."
+          
+          # 노드 타입 감지
+          if kubectl get nodes $NODE_NAME -o jsonpath='{.metadata.labels}' | grep -q "node-role.kubernetes.io/control-plane"; then
+            echo "📋 Running master node checks..."
+            kube-bench --targets master --json > /tmp/master-results.json
+            kube-bench --targets master > /tmp/master-results.txt
+          else
+            echo "📋 Running worker node checks..."
+            kube-bench --targets node --json > /tmp/node-results.json
+            kube-bench --targets node > /tmp/node-results.txt
+          fi
+          
+          # EKS 특화 검사
+          if kubectl get configmap -n kube-system aws-auth &>/dev/null; then
+            echo "📋 Running EKS-specific checks..."
+            kube-bench --benchmark eks-1.2.0 --json > /tmp/eks-results.json
+            kube-bench --benchmark eks-1.2.0 > /tmp/eks-results.txt
+          fi
+          
+          echo "✅ Audit completed successfully"
+          
+          # 결과 요약 출력
+          echo "📊 Results Summary:"
+          for file in /tmp/*-results.txt; do
+            if [ -f "$file" ]; then
+              echo "--- $(basename $file) ---"
+              grep -E "\[(PASS|FAIL|WARN)\]" "$file" | sort | uniq -c
+            fi
+          done
+        
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        
+        volumeMounts:
+        - name: var-lib-etcd
+          mountPath: /var/lib/etcd
+          readOnly: true
+        - name: var-lib-kubelet
+          mountPath: /var/lib/kubelet
+          readOnly: true
+        - name: etc-kubernetes
+          mountPath: /etc/kubernetes
+          readOnly: true
+        - name: usr-bin
+          mountPath: /usr/local/mount-from-host/bin
+          readOnly: true
+        - name: etc-cni-netd
+          mountPath: /etc/cni/net.d/
+          readOnly: true
+        - name: opt-cni-bin
+          mountPath: /opt/cni/bin/
+          readOnly: true
+      
+      volumes:
+      - name: var-lib-etcd
+        hostPath:
+          path: "/var/lib/etcd"
+      - name: var-lib-kubelet
+        hostPath:
+          path: "/var/lib/kubelet"
+      - name: etc-kubernetes
+        hostPath:
+          path: "/etc/kubernetes"
+      - name: usr-bin
+        hostPath:
+          path: "/usr/bin"
+      - name: etc-cni-netd
+        hostPath:
+          path: "/etc/cni/net.d/"
+      - name: opt-cni-bin
+        hostPath:
+          path: "/opt/cni/bin/"

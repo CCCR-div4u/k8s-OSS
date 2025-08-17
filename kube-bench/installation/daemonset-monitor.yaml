@@ -1,0 +1,163 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kube-bench-security-monitor
+  namespace: kube-system
+  labels:
+    app: kube-bench-monitor
+    component: security
+spec:
+  selector:
+    matchLabels:
+      app: kube-bench-monitor
+  
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  
+  template:
+    metadata:
+      labels:
+        app: kube-bench-monitor
+        component: security
+    spec:
+      hostPID: true
+      hostNetwork: true
+      
+      tolerations:
+      - operator: Exists
+      
+      serviceAccountName: kube-bench-monitor
+      
+      containers:
+      - name: kube-bench-monitor
+        image: aquasec/kube-bench:latest
+        command: ["/bin/sh"]
+        args:
+        - -c
+        - |
+          echo "🔄 Starting continuous security monitoring..."
+          
+          # 모니터링 간격 (기본: 6시간)
+          MONITOR_INTERVAL=${MONITOR_INTERVAL:-21600}
+          
+          while true; do
+            echo "🔍 Running security check at $(date)"
+            
+            # 노드 타입에 따른 검사 실행
+            if [ -f "/etc/kubernetes/manifests/kube-apiserver.yaml" ]; then
+              echo "📋 Master node detected - running control plane checks"
+              kube-bench --targets master --json > /tmp/master-check.json
+              
+              # 중요한 실패 항목 체크
+              CRITICAL_FAILS=$(jq -r '.Controls[] | select(.tests[].results[].status == "FAIL") | .tests[].results[] | select(.status == "FAIL" and .scored == true) | .test_number' /tmp/master-check.json 2>/dev/null | wc -l)
+              
+              if [ "$CRITICAL_FAILS" -gt 0 ]; then
+                echo "⚠️ Found $CRITICAL_FAILS critical failures on master node"
+                # 알림 로직 (예: webhook, 로그 등)
+              fi
+            else
+              echo "📋 Worker node detected - running node checks"
+              kube-bench --targets node --json > /tmp/node-check.json
+              
+              # 중요한 실패 항목 체크
+              CRITICAL_FAILS=$(jq -r '.Controls[] | select(.tests[].results[].status == "FAIL") | .tests[].results[] | select(.status == "FAIL" and .scored == true) | .test_number' /tmp/node-check.json 2>/dev/null | wc -l)
+              
+              if [ "$CRITICAL_FAILS" -gt 0 ]; then
+                echo "⚠️ Found $CRITICAL_FAILS critical failures on worker node"
+                # 알림 로직
+              fi
+            fi
+            
+            echo "✅ Security check completed. Next check in $MONITOR_INTERVAL seconds"
+            sleep $MONITOR_INTERVAL
+          done
+        
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: MONITOR_INTERVAL
+          value: "21600"  # 6시간 간격
+        
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        
+        volumeMounts:
+        - name: var-lib-kubelet
+          mountPath: /var/lib/kubelet
+          readOnly: true
+        - name: etc-kubernetes
+          mountPath: /etc/kubernetes
+          readOnly: true
+        - name: usr-bin
+          mountPath: /usr/local/mount-from-host/bin
+          readOnly: true
+        
+        # 헬스체크
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - "ps aux | grep -v grep | grep kube-bench"
+          initialDelaySeconds: 30
+          periodSeconds: 300
+        
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - "test -f /tmp/node-check.json || test -f /tmp/master-check.json"
+          initialDelaySeconds: 60
+          periodSeconds: 300
+      
+      volumes:
+      - name: var-lib-kubelet
+        hostPath:
+          path: "/var/lib/kubelet"
+      - name: etc-kubernetes
+        hostPath:
+          path: "/etc/kubernetes"
+      - name: usr-bin
+        hostPath:
+          path: "/usr/bin"
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-bench-monitor
+  namespace: kube-system
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kube-bench-monitor
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "configmaps"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kube-bench-monitor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kube-bench-monitor
+subjects:
+- kind: ServiceAccount
+  name: kube-bench-monitor
+  namespace: kube-system

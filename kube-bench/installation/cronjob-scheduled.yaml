@@ -1,0 +1,151 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: kube-bench-scheduled-audit
+  namespace: default
+  labels:
+    app: kube-bench
+    type: scheduled-audit
+spec:
+  # 매주 일요일 오전 2시 실행
+  schedule: "0 2 * * 0"
+  
+  # 최대 3개의 성공한 Job 기록 보관
+  successfulJobsHistoryLimit: 3
+  
+  # 최대 1개의 실패한 Job 기록 보관
+  failedJobsHistoryLimit: 1
+  
+  # 동시 실행 방지
+  concurrencyPolicy: Forbid
+  
+  # Job 시작 데드라인 (10분)
+  startingDeadlineSeconds: 600
+  
+  jobTemplate:
+    spec:
+      # Job 완료 후 1시간 뒤 자동 정리
+      ttlSecondsAfterFinished: 3600
+      
+      template:
+        metadata:
+          labels:
+            app: kube-bench
+            type: scheduled-audit
+        spec:
+          restartPolicy: Never
+          hostPID: true
+          
+          tolerations:
+          - operator: Exists
+          
+          containers:
+          - name: kube-bench-scheduler
+            image: aquasec/kube-bench:latest
+            command: ["/bin/sh"]
+            args:
+            - -c
+            - |
+              echo "🕐 Starting scheduled security audit at $(date)"
+              
+              # 결과 저장 디렉터리 생성
+              TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+              RESULT_DIR="/tmp/kube-bench-$TIMESTAMP"
+              mkdir -p $RESULT_DIR
+              
+              # EKS 환경 감지
+              if kubectl get configmap -n kube-system aws-auth &>/dev/null; then
+                echo "🔍 EKS environment detected"
+                kube-bench --benchmark eks-1.2.0 --json > $RESULT_DIR/eks-audit.json
+                kube-bench --benchmark eks-1.2.0 > $RESULT_DIR/eks-audit.txt
+              else
+                echo "🔍 Standard Kubernetes environment detected"
+                kube-bench --targets master,node --json > $RESULT_DIR/k8s-audit.json
+                kube-bench --targets master,node > $RESULT_DIR/k8s-audit.txt
+              fi
+              
+              # 결과 요약 생성
+              echo "📊 Generating audit summary..."
+              cat > $RESULT_DIR/summary.md << EOF
+              # Kube-bench Security Audit Report
+              
+              **Date**: $(date)
+              **Cluster**: $CLUSTER_NAME
+              **Node**: $NODE_NAME
+              
+              ## Summary
+              EOF
+              
+              # 통계 계산
+              for file in $RESULT_DIR/*.txt; do
+                if [ -f "$file" ]; then
+                  PASS_COUNT=$(grep -c "\[PASS\]" "$file" 2>/dev/null || echo "0")
+                  FAIL_COUNT=$(grep -c "\[FAIL\]" "$file" 2>/dev/null || echo "0")
+                  WARN_COUNT=$(grep -c "\[WARN\]" "$file" 2>/dev/null || echo "0")
+                  
+                  echo "### $(basename $file .txt)" >> $RESULT_DIR/summary.md
+                  echo "- ✅ PASS: $PASS_COUNT" >> $RESULT_DIR/summary.md
+                  echo "- ❌ FAIL: $FAIL_COUNT" >> $RESULT_DIR/summary.md
+                  echo "- ⚠️ WARN: $WARN_COUNT" >> $RESULT_DIR/summary.md
+                  echo "" >> $RESULT_DIR/summary.md
+                fi
+              done
+              
+              # 실패한 검사 항목 추가
+              echo "## Failed Checks" >> $RESULT_DIR/summary.md
+              for file in $RESULT_DIR/*.txt; do
+                if [ -f "$file" ]; then
+                  grep "\[FAIL\]" "$file" | head -10 >> $RESULT_DIR/summary.md
+                fi
+              done
+              
+              echo "✅ Scheduled audit completed successfully"
+              echo "📁 Results saved to: $RESULT_DIR"
+              
+              # 결과를 ConfigMap으로 저장 (선택사항)
+              if [ "$SAVE_TO_CONFIGMAP" = "true" ]; then
+                kubectl create configmap kube-bench-results-$TIMESTAMP \
+                  --from-file=$RESULT_DIR/ \
+                  --dry-run=client -o yaml | kubectl apply -f -
+                echo "💾 Results saved to ConfigMap: kube-bench-results-$TIMESTAMP"
+              fi
+            
+            env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: CLUSTER_NAME
+              value: "my-eks-cluster"  # 클러스터명으로 변경
+            - name: SAVE_TO_CONFIGMAP
+              value: "false"  # ConfigMap 저장 여부
+            
+            resources:
+              requests:
+                cpu: 100m
+                memory: 128Mi
+              limits:
+                cpu: 500m
+                memory: 512Mi
+            
+            volumeMounts:
+            - name: var-lib-kubelet
+              mountPath: /var/lib/kubelet
+              readOnly: true
+            - name: etc-kubernetes
+              mountPath: /etc/kubernetes
+              readOnly: true
+            - name: usr-bin
+              mountPath: /usr/local/mount-from-host/bin
+              readOnly: true
+          
+          volumes:
+          - name: var-lib-kubelet
+            hostPath:
+              path: "/var/lib/kubelet"
+          - name: etc-kubernetes
+            hostPath:
+              path: "/etc/kubernetes"
+          - name: usr-bin
+            hostPath:
+              path: "/usr/bin"
