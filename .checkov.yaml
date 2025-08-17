@@ -17,7 +17,7 @@ output: cli                          # 기본 출력 형식 (워크플로우에�
 
 # 실패 기준 (점진적 도입을 위한 설정)
 # 처음 도입 시에는 soft-fail-on을 사용하여 단계적으로 강화 가능
-soft-fail-on: medium               # MEDIUM 이하는 경고, HIGH 이상만 실패 처리
+soft-fail-on: high              # MEDIUM 이하는 경고, HIGH 이상만 실패 처리
 
 # 팀 합의된 예외 경로
 skip-path:

@@ -21,6 +21,8 @@ on:
 permissions:
   contents: read
   security-events: write
+  issues: write
+  pull-requests: write
 
 concurrency:
   group: checkov-${{ github.ref }}
@@ -103,8 +105,8 @@ jobs:
           directory: rendered
           framework: kubernetes
           quiet: true
-          output_format: sarif
-          output_file_path: results/${{ matrix.name }}.sarif
+          output_format: json,sarif
+          output_file_path: results/${{ matrix.name }}.json,results/${{ matrix.name }}.sarif
           soft_fail: true
 
       # 업로드 전 결과 파일 유효성/디버그
@@ -119,6 +121,323 @@ jobs:
           fi
           echo "SARIF size: $(wc -c < "$FILE") bytes"
           head -n 20 "$FILE" | sed -e 's/::/--/g' || true
+
+      # OpenAI API를 통한 보안 검사 결과 분석
+      - name: Analyze security scan results with OpenAI
+        if: always()
+        id: openai-analysis
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          JSON_FILE="results/${{ matrix.name }}.json"
+          
+          if [ ! -f "$JSON_FILE" ] || [ ! -s "$JSON_FILE" ]; then
+            echo "No JSON results found for analysis"
+            echo "analysis_result=No security issues found or scan failed" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # OpenAI API 호출을 위한 Python 스크립트 생성
+          cat > analyze_security.py << 'EOF'
+          import json
+          import os
+          import sys
+          import requests
+          
+          def analyze_checkov_results(json_file):
+              try:
+                  with open(json_file, 'r') as f:
+                      data = json.load(f)
+                  
+                  # Checkov 결과에서 실패한 검사들 추출
+                  failed_checks = data.get('results', {}).get('failed_checks', [])
+                  
+                  if not failed_checks:
+                      return "✅ 보안 검사 통과: 발견된 보안 이슈가 없습니다."
+                  
+                  # 심각도별 분류
+                  critical_issues = []
+                  high_issues = []
+                  medium_issues = []
+                  low_issues = []
+                  
+                  for check in failed_checks:
+                      severity = check.get('severity', 'UNKNOWN').upper()
+                      issue_info = {
+                          'check_id': check.get('check_id', 'N/A'),
+                          'check_name': check.get('check_name', 'N/A'),
+                          'file_path': check.get('file_path', 'N/A'),
+                          'resource': check.get('resource', 'N/A'),
+                          'description': check.get('description', 'N/A')
+                      }
+                      
+                      if severity == 'CRITICAL':
+                          critical_issues.append(issue_info)
+                      elif severity == 'HIGH':
+                          high_issues.append(issue_info)
+                      elif severity == 'MEDIUM':
+                          medium_issues.append(issue_info)
+                      else:
+                          low_issues.append(issue_info)
+                  
+                  # OpenAI API 호출
+                  api_key = os.getenv('OPENAI_API_KEY')
+                  if not api_key:
+                      return generate_basic_report(critical_issues, high_issues, medium_issues, low_issues)
+                  
+                  prompt = f"""
+          다음은 Kubernetes 보안 검사(Checkov) 결과입니다. 엔지니어에게 전달할 보고서를 한국어로 작성해주세요.
+          
+          Critical 이슈: {len(critical_issues)}개
+          High 이슈: {len(high_issues)}개  
+          Medium 이슈: {len(medium_issues)}개
+          Low 이슈: {len(low_issues)}개
+          
+          상세 이슈들:
+          {json.dumps({'critical': critical_issues, 'high': high_issues, 'medium': medium_issues, 'low': low_issues}, indent=2, ensure_ascii=False)}
+          
+          다음 형식으로 보고서를 작성해주세요:
+          1. 요약 (전체적인 보안 상태)
+          2. 우선순위별 이슈 분석
+          3. 권장 조치사항
+          4. 추가 검토가 필요한 사항
+          
+          보고서는 간결하고 실행 가능한 내용으로 작성해주세요.
+          """
+                  
+                  try:
+                      response = requests.post(
+                          'https://api.openai.com/v1/chat/completions',
+                          headers={
+                              'Authorization': f'Bearer {api_key}',
+                              'Content-Type': 'application/json'
+                          },
+                          json={
+                              'model': 'gpt-4o-mini',
+                              'messages': [
+                                  {'role': 'system', 'content': '당신은 Kubernetes 보안 전문가입니다. 보안 검사 결과를 분석하여 엔지니어에게 명확하고 실행 가능한 보고서를 제공합니다.'},
+                                  {'role': 'user', 'content': prompt}
+                              ],
+                              'max_tokens': 2000,
+                              'temperature': 0.3
+                          },
+                          timeout=30
+                      )
+                      
+                      if response.status_code == 200:
+                          result = response.json()
+                          return result['choices'][0]['message']['content']
+                      else:
+                          print(f"OpenAI API 오류: {response.status_code}")
+                          return generate_basic_report(critical_issues, high_issues, medium_issues, low_issues)
+                          
+                  except Exception as e:
+                      print(f"OpenAI API 호출 실패: {e}")
+                      return generate_basic_report(critical_issues, high_issues, medium_issues, low_issues)
+                      
+              except Exception as e:
+                  return f"❌ 분석 실패: {str(e)}"
+          
+          def generate_basic_report(critical, high, medium, low):
+              total_issues = len(critical) + len(high) + len(medium) + len(low)
+              
+              report = f"""## 🔒 Kubernetes 보안 검사 결과
+          
+          ### 📊 요약
+          - **총 이슈**: {total_issues}개
+          - **Critical**: {len(critical)}개 🔴
+          - **High**: {len(high)}개 🟠  
+          - **Medium**: {len(medium)}개 🟡
+          - **Low**: {len(low)}개 ⚪
+          
+          ### 🚨 우선 조치 필요 (Critical + High)
+          """
+              
+              priority_issues = critical + high
+              if priority_issues:
+                  for i, issue in enumerate(priority_issues[:5], 1):  # 상위 5개만 표시
+                      report += f"""
+          **{i}. {issue['check_name']}**
+          - 파일: `{issue['file_path']}`
+          - 리소스: `{issue['resource']}`
+          - 설명: {issue['description']}
+          """
+              else:
+                  report += "\n✅ 우선 조치가 필요한 Critical/High 이슈가 없습니다."
+              
+              if len(priority_issues) > 5:
+                  report += f"\n\n*추가로 {len(priority_issues) - 5}개의 우선순위 이슈가 더 있습니다.*"
+              
+              report += f"""
+          
+          ### 📋 권장 조치사항
+          1. Critical/High 이슈를 우선적으로 해결하세요
+          2. 보안 정책 및 네트워크 설정을 검토하세요  
+          3. 컨테이너 이미지 보안을 강화하세요
+          4. RBAC 설정을 점검하세요
+          
+          전체 상세 결과는 GitHub Actions 아티팩트에서 확인할 수 있습니다.
+          """
+              
+              return report
+          
+          if __name__ == "__main__":
+              if len(sys.argv) != 2:
+                  print("Usage: python analyze_security.py <json_file>")
+                  sys.exit(1)
+              
+              result = analyze_checkov_results(sys.argv[1])
+              print(result)
+          EOF
+          
+          # Python 스크립트 실행
+          python3 analyze_security.py "$JSON_FILE" > analysis_result.txt
+          
+          # GitHub Output에 결과 저장 (멀티라인 처리)
+          echo "analysis_result<<EOF" >> $GITHUB_OUTPUT
+          cat analysis_result.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          # 이슈 개수 확인
+          ISSUE_COUNT=$(python3 -c "
+          import json
+          try:
+              with open('$JSON_FILE', 'r') as f:
+                  data = json.load(f)
+              failed_checks = data.get('results', {}).get('failed_checks', [])
+              print(len(failed_checks))
+          except:
+              print(0)
+          ")
+          
+          echo "issue_count=$ISSUE_COUNT" >> $GITHUB_OUTPUT
+
+      # PR에 댓글로 결과 전달
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && steps.openai-analysis.outputs.issue_count != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const analysis = `${{ steps.openai-analysis.outputs.analysis_result }}`;
+            const component = '${{ matrix.name }}';
+            
+            const comment = `## 🔒 보안 검사 결과 - ${component}
+            
+            ${analysis}
+            
+            ---
+            *이 댓글은 Checkov 보안 검사 결과를 OpenAI로 분석한 내용입니다.*`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      # Issue 생성 (Critical/High 이슈가 있을 때만)
+      - name: Create security issue
+        if: always() && steps.openai-analysis.outputs.issue_count != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const analysis = `${{ steps.openai-analysis.outputs.analysis_result }}`;
+            const component = '${{ matrix.name }}';
+            const issueCount = '${{ steps.openai-analysis.outputs.issue_count }}';
+            
+            // Critical/High 이슈가 있는지 확인
+            const fs = require('fs');
+            let hasCriticalHigh = false;
+            
+            try {
+              const jsonFile = `results/${component}.json`;
+              if (fs.existsSync(jsonFile)) {
+                const data = JSON.parse(fs.readFileSync(jsonFile, 'utf8'));
+                const failedChecks = data.results?.failed_checks || [];
+                hasCriticalHigh = failedChecks.some(check => 
+                  ['CRITICAL', 'HIGH'].includes(check.severity?.toUpperCase())
+                );
+              }
+            } catch (e) {
+              console.log('JSON 파일 읽기 실패:', e);
+            }
+            
+            if (hasCriticalHigh) {
+              const title = `🚨 보안 이슈 발견 - ${component} (${issueCount}개 이슈)`;
+              const body = `${analysis}
+            
+            ## 📋 체크리스트
+            - [ ] Critical 이슈 해결
+            - [ ] High 이슈 해결  
+            - [ ] 보안 정책 검토
+            - [ ] 재검사 수행
+            
+            ---
+            *자동 생성된 보안 이슈입니다. 해결 후 이슈를 닫아주세요.*`;
+              
+              github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['security', 'checkov', component]
+              });
+            }
+
+      # Slack 알림 (웹훅 URL이 설정된 경우)
+      - name: Send Slack notification
+        if: always() && steps.openai-analysis.outputs.issue_count != '0' && env.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          ANALYSIS="${{ steps.openai-analysis.outputs.analysis_result }}"
+          COMPONENT="${{ matrix.name }}"
+          ISSUE_COUNT="${{ steps.openai-analysis.outputs.issue_count }}"
+          
+          # Slack 메시지 생성
+          cat > slack_message.json << EOF
+          {
+            "text": "🔒 Kubernetes 보안 검사 결과",
+            "blocks": [
+              {
+                "type": "header",
+                "text": {
+                  "type": "plain_text",
+                  "text": "🔒 보안 검사 결과 - ${COMPONENT}"
+                }
+              },
+              {
+                "type": "section",
+                "fields": [
+                  {
+                    "type": "mrkdwn",
+                    "text": "*컴포넌트:* ${COMPONENT}"
+                  },
+                  {
+                    "type": "mrkdwn", 
+                    "text": "*발견된 이슈:* ${ISSUE_COUNT}개"
+                  },
+                  {
+                    "type": "mrkdwn",
+                    "text": "*워크플로우:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|보기>"
+                  }
+                ]
+              },
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "\`\`\`${ANALYSIS}\`\`\`"
+                }
+              }
+            ]
+          }
+          EOF
+          
+          # Slack 웹훅으로 전송
+          curl -X POST -H 'Content-type: application/json' \
+            --data @slack_message.json \
+            "$SLACK_WEBHOOK_URL"
 
       # 포크 PR이면 권한 제한으로 실패하니 업로드 스킵
       - name: Upload SARIF (${{ matrix.name }})
@@ -136,4 +455,13 @@ jobs:
         with:
           name: sarif-${{ matrix.name }}
           path: results/${{ matrix.name }}.sarif
+          if-no-files-found: warn
+
+      # JSON 결과도 아티팩트로 업로드
+      - name: Upload JSON results as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: json-results-${{ matrix.name }}
+          path: results/${{ matrix.name }}.json
           if-no-files-found: warn
