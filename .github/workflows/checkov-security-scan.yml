@@ -322,7 +322,7 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const analysis = `${{ steps.openai-analysis.outputs.analysis_result }}`;
+            const analysis = JSON.parse('${{ toJSON(steps.openai-analysis.outputs.analysis_result) }}');
             const component = '${{ matrix.name }}';
             
             const comment = `## 🔒 보안 검사 결과 - ${component}
@@ -345,7 +345,7 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const analysis = `${{ steps.openai-analysis.outputs.analysis_result }}`;
+            const analysis = JSON.parse('${{ toJSON(steps.openai-analysis.outputs.analysis_result) }}');
             const component = '${{ matrix.name }}';
             const issueCount = '${{ steps.openai-analysis.outputs.issue_count }}';
             
