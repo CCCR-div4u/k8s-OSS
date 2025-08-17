@@ -162,7 +162,11 @@ jobs:
                   low_issues = []
                   
                   for check in failed_checks:
-                      severity = check.get('severity', 'UNKNOWN').upper()
+                      severity = check.get('severity')
+                      if severity:
+                          severity = severity.upper()
+                      else:
+                          severity = 'UNKNOWN'
                       issue_info = {
                           'check_id': check.get('check_id', 'N/A'),
                           'check_name': check.get('check_name', 'N/A'),
