@@ -8,7 +8,6 @@ on:
       - "keycloak/**"
       - "sonarqube/**"
       - "thanos/**"
-      - ".github/workflows/checkov-security-scan.yml"
   push:
     branches: [ main ]
     paths:
@@ -30,118 +29,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # 변경된 디렉터리 감지
-  detect-changes:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-      workflow-changed: ${{ steps.check-workflow.outputs.changed }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Check if workflow changed
-        id: check-workflow
-        run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            # Push 이벤트: 이전 커밋과 비교
-            CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
-          else
-            # PR 이벤트: base 브랜치와 비교
-            git fetch origin ${{ github.base_ref }}
-            CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
-          fi
-          
-          echo "변경된 파일들:"
-          echo "$CHANGED_FILES"
-          
-          if echo "$CHANGED_FILES" | grep -q "^\.github/workflows/checkov-security-scan\.yml$"; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-            echo "🔄 워크플로우 파일이 변경되었습니다. 전체 검사를 실행합니다."
-          else
-            echo "changed=false" >> $GITHUB_OUTPUT
-            echo "📁 워크플로우 파일 변경 없음. 변경된 디렉터리만 검사합니다."
-          fi
-
-      - name: Detect changed directories
-        id: set-matrix
-        run: |
-          # 전체 컴포넌트 정의
-          declare -A COMPONENTS=(
-            ["argo-cd"]='{"name": "argo-cd", "chart_ref": "argo/argo-cd", "values": "argo-cd/my-values.yaml"}'
-            ["harbor"]='{"name": "harbor", "chart_ref": "goharbor/harbor", "values": "harbor/override-values.yaml"}'
-            ["keycloak"]='{"name": "keycloak", "chart_ref": "bitnami/keycloak", "values": "keycloak/installation/helm-values.yaml"}'
-            ["sonarqube"]='{"name": "sonarqube", "chart_ref": "sonarqube/sonarqube", "values": "sonarqube/override-values.yaml"}'
-            ["thanos"]='{"name": "thanos", "chart_ref": "bitnami/thanos", "values": "thanos/values/values.yaml"}'
-          )
-          
-          # 워크플로우가 변경된 경우 전체 검사
-          if [ "${{ steps.check-workflow.outputs.changed }}" = "true" ]; then
-            echo "🔄 워크플로우 변경으로 인한 전체 검사"
-            MATRIX_INCLUDE=""
-            for component in "${!COMPONENTS[@]}"; do
-              if [ -n "$MATRIX_INCLUDE" ]; then
-                MATRIX_INCLUDE="$MATRIX_INCLUDE,"
-              fi
-              MATRIX_INCLUDE="$MATRIX_INCLUDE${COMPONENTS[$component]}"
-            done
-          else
-            # 변경된 파일 확인
-            if [ "${{ github.event_name }}" = "push" ]; then
-              CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
-            else
-              git fetch origin ${{ github.base_ref }}
-              CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
-            fi
-            
-            echo "변경된 파일들:"
-            echo "$CHANGED_FILES"
-            
-            # 변경된 디렉터리 감지
-            CHANGED_DIRS=""
-            for component in "${!COMPONENTS[@]}"; do
-              if echo "$CHANGED_FILES" | grep -q "^${component}/"; then
-                echo "✅ 변경 감지: $component"
-                if [ -n "$CHANGED_DIRS" ]; then
-                  CHANGED_DIRS="$CHANGED_DIRS "
-                fi
-                CHANGED_DIRS="$CHANGED_DIRS$component"
-              fi
-            done
-            
-            # 매트릭스 생성
-            MATRIX_INCLUDE=""
-            if [ -n "$CHANGED_DIRS" ]; then
-              for component in $CHANGED_DIRS; do
-                if [ -n "$MATRIX_INCLUDE" ]; then
-                  MATRIX_INCLUDE="$MATRIX_INCLUDE,"
-                fi
-                MATRIX_INCLUDE="$MATRIX_INCLUDE${COMPONENTS[$component]}"
-              done
-            fi
-          fi
-          
-          if [ -n "$MATRIX_INCLUDE" ]; then
-            MATRIX="{\"include\":[$MATRIX_INCLUDE]}"
-            echo "🎯 실행할 컴포넌트들: $MATRIX"
-          else
-            MATRIX="{\"include\":[]}"
-            echo "⏭️ 검사할 변경사항이 없습니다."
-          fi
-          
-          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
-
   render-and-scan:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.matrix != '{"include":[]}'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
-    container:
-      image: ghcr.io/bridgecrewio/checkov:3.2.461
+      matrix:
+        include:
+          # ── 디렉터리별: 차트/값 파일 지정 ──
+          - name: argo-cd
+            chart_ref: argo/argo-cd
+            values: "argo-cd/my-values.yaml"
+          - name: harbor
+            chart_ref: goharbor/harbor
+            values: "harbor/override-values.yaml"
+          - name: keycloak
+            chart_ref: bitnami/keycloak
+            values: "keycloak/installation/helm-values.yaml"
+          - name: sonarqube
+            chart_ref: sonarqube/sonarqube
+            values: "sonarqube/override-values.yaml"
+          - name: thanos
+            chart_ref: bitnami/thanos
+            values: "thanos/values/values.yaml"
 
     steps:
       - name: Checkout
@@ -150,10 +59,8 @@ jobs:
       # Helm v3 설치
       - name: Setup Helm
         uses: azure/setup-helm@v4
-        with:
-          version: latest
 
-      # Helm 저장소 추가
+      # 필요한 차트 리포 등록
       - name: Add Helm repos
         run: |
           helm repo add bitnami https://charts.bitnami.com/bitnami
@@ -163,11 +70,11 @@ jobs:
           helm repo add grafana https://grafana.github.io/helm-charts
           helm repo update
 
-      # 디렉터리 생성
       - name: Prepare dirs
-        run: mkdir -p rendered results
+        run: |
+          mkdir -p rendered results
 
-      # Helm 템플릿 렌더링
+      # values가 존재할 때만 -f 로 붙여서 렌더
       - name: Helm template (${{ matrix.name }})
         env:
           NAME: ${{ matrix.name }}
@@ -191,7 +98,7 @@ jobs:
           # 빈 파일 방지
           test -s "rendered/${NAME}.yaml"
 
-      # Checkov 보안 검사
+      # 컨테이너 기반 Checkov 액션으로 렌더 결과 스캔
       - name: Run Checkov on rendered/${{ matrix.name }}.yaml
         uses: bridgecrewio/checkov-action@v12
         with:
@@ -201,13 +108,10 @@ jobs:
           output_format: json,sarif
           output_file_path: results/${{ matrix.name }}.json,results/${{ matrix.name }}.sarif
           soft_fail: true
-          log_level: WARNING
-          container_user: 0
 
-      # SARIF 파일 검사 (디버그용)
+      # 업로드 전 결과 파일 유효성/디버그
       - name: Inspect SARIF (debug)
-        env:
-          CHECKOV_RESULTS: ${{ env.CHECKOV_RESULTS }}
+        if: always()
         run: |
           ls -lah results || true
           FILE="results/${{ matrix.name }}.sarif"
@@ -593,18 +497,20 @@ jobs:
           sarif_file: results/${{ matrix.name }}.sarif
           category: checkov-${{ matrix.name }}
 
-      # SARIF 파일을 아티팩트로 업로드 (fallback)
+      # 업로드 실패/스킵하더라도 파일은 아티팩트로 보존
       - name: Upload SARIF as artifact (fallback)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: sarif-${{ matrix.name }}
           path: results/${{ matrix.name }}.sarif
+          if-no-files-found: warn
 
-      # JSON 결과를 아티팩트로 업로드
+      # JSON 결과도 아티팩트로 업로드
       - name: Upload JSON results as artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: json-results-${{ matrix.name }}
           path: results/${{ matrix.name }}.json
+          if-no-files-found: warn
