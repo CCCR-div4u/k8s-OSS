@@ -2,6 +2,8 @@
 
 이 디렉터리는 Kubernetes 환경에서 Keycloak을 설치하고 Argo CD와 OIDC 연동하는 방법을 다룹니다.
 
+> 🧪 **워크플로 테스트**: 이 파일은 Checkov 보안 스캔 워크플로의 스마트 변경 감지 기능을 테스트하기 위해 수정되었습니다. (2025-08-19)
+
 ## 📁 파일 구조
 
 ```
@@ -34,18 +36,32 @@ keycloak/
 - **PostgreSQL** 데이터베이스 연동
 - **Argo CD OIDC** 인증 연동
 - **Harbor OIDC** 인증 연동
+- **보안 스캔** 자동화 (Checkov 통합)
 
 ## 📋 요구사항
 
 - Kubernetes 클러스터
 - AWS Load Balancer Controller
 - Helm 3.x
+- 보안 정책 준수 (Checkov 스캔 통과)
 
 ## 🌐 접근 URL
 
 - **Keycloak 관리 콘솔**: https://keycloak.bluesunnywings.com/admin/
 - **Argo CD**: https://argocd.bluesunnywings.com
 
+## 🔒 보안 고려사항
+
+- 정기적인 보안 스캔 실행
+- HTTPS 강제 사용
+- 강력한 패스워드 정책 적용
+- 정기적인 보안 업데이트
+
 ## 📞 지원
 
 문제가 발생하면 [troubleshooting.md](argo-cd-integration/troubleshooting.md)를 먼저 확인해주세요.
+
+---
+
+**📅 최종 업데이트**: 2025-08-19  
+**🔧 워크플로 테스트**: 스마트 변경 감지 기능 검증용
