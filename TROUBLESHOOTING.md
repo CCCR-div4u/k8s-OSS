@@ -211,4 +211,162 @@ OPENAI_API_KEY=your_key python3 test_openai_analysis.py results/component.json
 
 ---
 
-*이 문서는 2025-08-17에 작성되었으며, 향후 유사한 문제 발생 시 참고용으로 활용할 수 있습니다.*
+### 6. GitHub Actions JSON 매트릭스 형식 오류 ⭐ **최신 추가 (2025-08-19)**
+
+#### 문제 상황
+```
+Error: Unable to process file command 'output' successfully.
+Error: Invalid format '  "include": ['
+```
+
+#### 원인
+- GitHub Actions에서 멀티라인 JSON을 `echo "matrix=$JSON"` 방식으로 출력할 때 형식이 깨짐
+- 줄바꿈과 공백이 포함된 JSON이 GitHub Actions output으로 올바르게 파싱되지 않음
+- 특히 복잡한 매트릭스 JSON에서 자주 발생
+
+#### 해결 방법
+
+**기존 방식 (문제 발생)**
+```yaml
+- name: Set matrix
+  run: |
+    MATRIX='{
+      "include": [
+        {
+          "name": "component",
+          "value": "test"
+        }
+      ]
+    }'
+    echo "matrix=$MATRIX" >> $GITHUB_OUTPUT  # ❌ 실패
+```
+
+**개선된 방식 (해결)**
+```yaml
+- name: Set matrix
+  run: |
+    # 임시 파일을 사용한 안전한 JSON 생성
+    cat > /tmp/matrix.json << 'EOF'
+    {
+      "include": [
+        {
+          "name": "component",
+          "value": "test"
+        }
+      ]
+    }
+    EOF
+    
+    # jq를 사용한 JSON 압축 및 검증
+    MATRIX=$(cat /tmp/matrix.json | jq -c .)
+    
+    # heredoc 방식으로 안전한 output 설정
+    {
+      echo "matrix<<EOF"
+      echo "$MATRIX"
+      echo "EOF"
+    } >> $GITHUB_OUTPUT  # ✅ 성공
+```
+
+#### 핵심 개선사항
+1. **임시 파일 사용**: 복잡한 JSON을 안전하게 생성
+2. **jq 압축**: JSON 유효성 검사 및 한 줄로 압축  
+3. **heredoc output**: 특수문자와 줄바꿈 안전 처리
+
+#### 적용된 커밋
+- 커밋 해시: `bb3c0fb`
+- 제목: "🔧 fix: GitHub Actions JSON 매트릭스 형식 오류 수정"
+
+---
+
+### 7. 워크플로 파일 구조 및 관리 문제 ⭐ **최신 추가 (2025-08-19)**
+
+#### 문제 상황
+- 개발/테스트용 파일들이 OSS 프로젝트 루트에 혼재
+- 문서화 파일들이 실제 Kubernetes 배포 파일들과 섞여있음
+- 백업 파일들의 체계적 관리 필요
+
+#### 해결 방법
+
+**디렉터리 구조 정리**
+```
+k8s-OSS/
+├── .github/workflows/
+│   └── checkov-security-scan.yml          # 활성 워크플로
+├── docs/                                  # 📁 새로 생성
+│   ├── README.md
+│   └── workflow-improvements/
+│       ├── README.md
+│       ├── CHECKOV_WORKFLOW_IMPROVEMENTS.md
+│       ├── IMPLEMENTATION_COMPLETE.md
+│       ├── test-workflow.sh
+│       └── checkov-security-scan-old.yml  # 백업
+├── argo-cd/                               # OSS 컴포넌트들
+├── harbor/
+└── ...
+```
+
+**파일 분류 원칙**
+- **OSS 프로젝트 파일**: 루트 디렉터리에 유지
+- **문서화/개발 도구**: `docs/` 디렉터리로 이동  
+- **백업 파일**: `docs/workflow-improvements/`에 보관
+
+#### 적용된 커밋
+- 커밋 해시: `7080feb`, `2f9281f`
+- 제목: "feat: 개선된 Checkov 보안 스캔 워크플로 구현"
+
+---
+
+## 🧪 추가 디버깅 도구 ⭐ **최신 추가**
+
+### 1. 로컬 테스트 스크립트
+```bash
+cd docs/workflow-improvements
+chmod +x test-workflow.sh
+./test-workflow.sh
+```
+
+### 2. JSON 검증 도구
+```bash
+# 매트릭스 JSON 검증
+echo '{"include":[...]}' | jq .
+
+# 파일에서 JSON 검증  
+jq . < matrix.json
+```
+
+### 3. 워크플로 구문 검사
+```bash
+# Python yaml 모듈로 YAML 구문 검사
+python3 -c "
+import yaml
+with open('.github/workflows/checkov-security-scan.yml', 'r') as f:
+    yaml.safe_load(f)
+print('YAML 구문 유효')
+"
+```
+
+## 📚 추가 참고 자료
+
+### GitHub Actions 문서
+- [Using outputs with jobs](https://docs.github.com/en/actions/using-jobs/defining-outputs-for-jobs)
+- [Using a matrix strategy](https://docs.github.com/en/actions/using-jobs/using-a-matrix-for-your-jobs)
+- [Workflow syntax](https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions)
+
+### 관련 도구
+- [dorny/paths-filter](https://github.com/dorny/paths-filter)
+- [bridgecrewio/checkov-action](https://github.com/bridgecrewio/checkov-action)
+- [jq Manual](https://stedolan.github.io/jq/manual/)
+
+## 🔄 버전 히스토리
+
+| 버전 | 커밋 | 날짜 | 주요 변경사항 |
+|------|------|------|---------------|
+| v1.0 | 초기 | 2025-08-17 | 기본 트러블슈팅 문서 |
+| v1.1 | `7080feb` | 2025-08-19 | 워크플로 개선 구현 |
+| v1.2 | `2f9281f` | 2025-08-19 | 워크플로 활성화 |
+| v1.3 | `bb3c0fb` | 2025-08-19 | JSON 매트릭스 오류 수정 |
+
+---
+
+*이 문서는 2025-08-17에 작성되었으며, 2025-08-19에 최신 트러블슈팅 내용이 추가되었습니다. 향후 유사한 문제 발생 시 참고용으로 활용할 수 있습니다.*
