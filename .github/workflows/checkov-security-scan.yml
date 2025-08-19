@@ -1,23 +1,26 @@
-name: Render Helm → Checkov (Kubernetes)
+name: Smart Checkov Security Scan
 
 on:
   pull_request:
+    # 넓은 범위로 설정하여 변경 감지 로직에서 처리
     paths:
       - "argo-cd/**"
       - "harbor/**"
       - "keycloak/**"
       - "sonarqube/**"
       - "thanos/**"
+      - "monitoring_o11y/**"
       - ".github/workflows/checkov-security-scan.yml"
   push:
     branches: [ main ]
     paths:
-      - '.github/workflows/checkov-security-scan.yml'
       - "argo-cd/**"
       - "harbor/**"
       - "keycloak/**"
       - "sonarqube/**"
       - "thanos/**"
+      - "monitoring_o11y/**"
+      - ".github/workflows/checkov-security-scan.yml"
 
 permissions:
   contents: read
@@ -30,122 +33,212 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # 변경된 디렉터리 감지
-  detect-changes:
+  # 변경 감지 및 매트릭스 생성
+  detect:
     runs-on: ubuntu-latest
     outputs:
+      workflows: ${{ steps.filter.outputs.workflows }}
+      argo_cd: ${{ steps.filter.outputs.argo_cd }}
+      harbor: ${{ steps.filter.outputs.harbor }}
+      keycloak: ${{ steps.filter.outputs.keycloak }}
+      sonarqube: ${{ steps.filter.outputs.sonarqube }}
+      thanos: ${{ steps.filter.outputs.thanos }}
+      monitoring: ${{ steps.filter.outputs.monitoring }}
       matrix: ${{ steps.set-matrix.outputs.matrix }}
-      workflow-changed: ${{ steps.check-workflow.outputs.changed }}
+      scan_mode: ${{ steps.set-matrix.outputs.scan_mode }}
+      
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Detect changed paths
+        uses: dorny/paths-filter@v3
+        id: filter
         with:
-          fetch-depth: 0
+          filters: |
+            workflows:
+              - '.github/workflows/checkov-security-scan.yml'
+            argo_cd:
+              - 'argo-cd/**'
+            harbor:
+              - 'harbor/**'
+            keycloak:
+              - 'keycloak/**'
+            sonarqube:
+              - 'sonarqube/**'
+            thanos:
+              - 'thanos/**'
+            monitoring:
+              - 'monitoring_o11y/**'
 
-      - name: Check if workflow changed
-        id: check-workflow
-        run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            # Push 이벤트: 이전 커밋과 비교
-            CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
-          else
-            # PR 이벤트: base 브랜치와 비교
-            git fetch origin ${{ github.base_ref }}
-            CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
-          fi
-          
-          echo "변경된 파일들:"
-          echo "$CHANGED_FILES"
-          
-          if echo "$CHANGED_FILES" | grep -q "^\.github/workflows/checkov-security-scan\.yml$"; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-            echo "🔄 워크플로우 파일이 변경되었습니다. 전체 검사를 실행합니다."
-          else
-            echo "changed=false" >> $GITHUB_OUTPUT
-            echo "📁 워크플로우 파일 변경 없음. 변경된 디렉터리만 검사합니다."
-          fi
-
-      - name: Detect changed directories
+      - name: Set matrix and scan mode
         id: set-matrix
         run: |
-          # 전체 컴포넌트 정의
-          declare -A COMPONENTS=(
-            ["argo-cd"]='{"name": "argo-cd", "chart_ref": "argo/argo-cd", "values": "argo-cd/my-values.yaml"}'
-            ["harbor"]='{"name": "harbor", "chart_ref": "goharbor/harbor", "values": "harbor/override-values.yaml"}'
-            ["keycloak"]='{"name": "keycloak", "chart_ref": "bitnami/keycloak", "values": "keycloak/installation/helm-values.yaml"}'
-            ["sonarqube"]='{"name": "sonarqube", "chart_ref": "sonarqube/sonarqube", "values": "sonarqube/override-values.yaml"}'
-            ["thanos"]='{"name": "thanos", "chart_ref": "bitnami/thanos", "values": "thanos/values/values.yaml"}'
-          )
+          # 전체 컴포넌트 매트릭스 정의
+          FULL_MATRIX='{
+            "include": [
+              {
+                "name": "argo-cd",
+                "chart_ref": "argo/argo-cd",
+                "values": "argo-cd/my-values.yaml",
+                "scan_type": "helm"
+              },
+              {
+                "name": "harbor", 
+                "chart_ref": "goharbor/harbor",
+                "values": "harbor/override-values.yaml",
+                "scan_type": "helm"
+              },
+              {
+                "name": "keycloak",
+                "chart_ref": "bitnami/keycloak", 
+                "values": "keycloak/installation/helm-values.yaml",
+                "scan_type": "helm"
+              },
+              {
+                "name": "sonarqube",
+                "chart_ref": "sonarqube/sonarqube",
+                "values": "sonarqube/override-values.yaml",
+                "scan_type": "helm"
+              },
+              {
+                "name": "thanos",
+                "chart_ref": "bitnami/thanos",
+                "values": "thanos/values/values.yaml",
+                "scan_type": "helm"
+              },
+              {
+                "name": "monitoring_o11y",
+                "chart_ref": "",
+                "values": "",
+                "scan_type": "kubernetes"
+              }
+            ]
+          }'
           
-          # 워크플로우가 변경된 경우 전체 검사
-          if [ "${{ steps.check-workflow.outputs.changed }}" = "true" ]; then
-            echo "🔄 워크플로우 변경으로 인한 전체 검사"
-            MATRIX_INCLUDE=""
-            for component in "${!COMPONENTS[@]}"; do
-              if [ -n "$MATRIX_INCLUDE" ]; then
-                MATRIX_INCLUDE="$MATRIX_INCLUDE,"
-              fi
-              MATRIX_INCLUDE="$MATRIX_INCLUDE${COMPONENTS[$component]}"
-            done
-          else
-            # 변경된 파일 확인
-            if [ "${{ github.event_name }}" = "push" ]; then
-              CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
+          # 워크플로 파일이 변경된 경우 전체 스캔
+          if [ "${{ steps.filter.outputs.workflows }}" = "true" ]; then
+            echo "🔄 워크플로 파일 변경 감지 - 전체 스캔 모드"
+            echo "matrix=$FULL_MATRIX" >> $GITHUB_OUTPUT
+            echo "scan_mode=full_scan" >> $GITHUB_OUTPUT
+            echo "::notice::워크플로 파일이 변경되어 모든 컴포넌트를 스캔합니다."
+            exit 0
+          fi
+          
+          # 변경된 컴포넌트만 스캔
+          CHANGED_COMPONENTS=""
+          
+          if [ "${{ steps.filter.outputs.argo_cd }}" = "true" ]; then
+            CHANGED_COMPONENTS="$CHANGED_COMPONENTS argo-cd"
+          fi
+          if [ "${{ steps.filter.outputs.harbor }}" = "true" ]; then
+            CHANGED_COMPONENTS="$CHANGED_COMPONENTS harbor"
+          fi
+          if [ "${{ steps.filter.outputs.keycloak }}" = "true" ]; then
+            CHANGED_COMPONENTS="$CHANGED_COMPONENTS keycloak"
+          fi
+          if [ "${{ steps.filter.outputs.sonarqube }}" = "true" ]; then
+            CHANGED_COMPONENTS="$CHANGED_COMPONENTS sonarqube"
+          fi
+          if [ "${{ steps.filter.outputs.thanos }}" = "true" ]; then
+            CHANGED_COMPONENTS="$CHANGED_COMPONENTS thanos"
+          fi
+          if [ "${{ steps.filter.outputs.monitoring }}" = "true" ]; then
+            CHANGED_COMPONENTS="$CHANGED_COMPONENTS monitoring_o11y"
+          fi
+          
+          # 변경된 컴포넌트가 없으면 빈 매트릭스
+          if [ -z "$CHANGED_COMPONENTS" ]; then
+            echo "⏭️ 스캔 대상 디렉터리에 변경사항이 없습니다."
+            echo "matrix={\"include\":[]}" >> $GITHUB_OUTPUT
+            echo "scan_mode=no_changes" >> $GITHUB_OUTPUT
+            echo "::notice::변경된 스캔 대상이 없어 보안 검사를 건너뜁니다."
+            exit 0
+          fi
+          
+          # 변경된 컴포넌트만 포함하는 매트릭스 생성
+          echo "🎯 변경된 컴포넌트: $CHANGED_COMPONENTS"
+          
+          MATRIX_ITEMS=""
+          for component in $CHANGED_COMPONENTS; do
+            case $component in
+              "argo-cd")
+                ITEM='{"name": "argo-cd", "chart_ref": "argo/argo-cd", "values": "argo-cd/my-values.yaml", "scan_type": "helm"}'
+                ;;
+              "harbor")
+                ITEM='{"name": "harbor", "chart_ref": "goharbor/harbor", "values": "harbor/override-values.yaml", "scan_type": "helm"}'
+                ;;
+              "keycloak")
+                ITEM='{"name": "keycloak", "chart_ref": "bitnami/keycloak", "values": "keycloak/installation/helm-values.yaml", "scan_type": "helm"}'
+                ;;
+              "sonarqube")
+                ITEM='{"name": "sonarqube", "chart_ref": "sonarqube/sonarqube", "values": "sonarqube/override-values.yaml", "scan_type": "helm"}'
+                ;;
+              "thanos")
+                ITEM='{"name": "thanos", "chart_ref": "bitnami/thanos", "values": "thanos/values/values.yaml", "scan_type": "helm"}'
+                ;;
+              "monitoring_o11y")
+                ITEM='{"name": "monitoring_o11y", "chart_ref": "", "values": "", "scan_type": "kubernetes"}'
+                ;;
+            esac
+            
+            if [ -n "$MATRIX_ITEMS" ]; then
+              MATRIX_ITEMS="$MATRIX_ITEMS,$ITEM"
             else
-              git fetch origin ${{ github.base_ref }}
-              CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+              MATRIX_ITEMS="$ITEM"
             fi
-            
-            echo "변경된 파일들:"
-            echo "$CHANGED_FILES"
-            
-            # 변경된 디렉터리 감지
-            CHANGED_DIRS=""
-            for component in "${!COMPONENTS[@]}"; do
-              if echo "$CHANGED_FILES" | grep -q "^${component}/"; then
-                echo "✅ 변경 감지: $component"
-                if [ -n "$CHANGED_DIRS" ]; then
-                  CHANGED_DIRS="$CHANGED_DIRS "
-                fi
-                CHANGED_DIRS="$CHANGED_DIRS$component"
-              fi
-            done
-            
-            # 매트릭스 생성
-            MATRIX_INCLUDE=""
-            if [ -n "$CHANGED_DIRS" ]; then
-              for component in $CHANGED_DIRS; do
-                if [ -n "$MATRIX_INCLUDE" ]; then
-                  MATRIX_INCLUDE="$MATRIX_INCLUDE,"
-                fi
-                MATRIX_INCLUDE="$MATRIX_INCLUDE${COMPONENTS[$component]}"
-              done
-            fi
-          fi
+          done
           
-          if [ -n "$MATRIX_INCLUDE" ]; then
-            MATRIX="{\"include\":[$MATRIX_INCLUDE]}"
-            echo "🎯 실행할 컴포넌트들: $MATRIX"
-          else
-            MATRIX="{\"include\":[]}"
-            echo "⏭️ 검사할 변경사항이 없습니다."
-          fi
-          
-          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+          CHANGED_MATRIX="{\"include\":[$MATRIX_ITEMS]}"
+          echo "matrix=$CHANGED_MATRIX" >> $GITHUB_OUTPUT
+          echo "scan_mode=changed_scan" >> $GITHUB_OUTPUT
+          echo "::notice::변경된 컴포넌트만 스캔합니다: $CHANGED_COMPONENTS"
 
-  render-and-scan:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.matrix != '{"include":[]}'
+  # 변경사항이 없을 때 빠른 성공 종료
+  no-changes:
+    needs: detect
+    if: needs.detect.outputs.scan_mode == 'no_changes'
+    runs-on: ubuntu-latest
+    steps:
+      - name: No changes detected
+        run: |
+          echo "✅ 스캔 대상 디렉터리에 변경사항이 없습니다."
+          echo "📁 모니터링된 디렉터리: argo-cd, harbor, keycloak, sonarqube, thanos"
+          echo "🔧 워크플로 파일: .github/workflows/checkov-security-scan.yml"
+          echo ""
+          echo "변경사항이 감지되면 자동으로 보안 스캔이 실행됩니다."
+          echo "::notice::변경사항 없음 - 보안 스캔을 건너뜁니다."
+  # 보안 스캔 실행
+  scan:
+    needs: detect
+    if: needs.detect.outputs.scan_mode != 'no_changes'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
-    container:
-      image: ghcr.io/bridgecrewio/checkov:3.2.461
+      matrix: ${{ fromJson(needs.detect.outputs.matrix) }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Display scan info
+        run: |
+          echo "🔍 스캔 모드: ${{ needs.detect.outputs.scan_mode }}"
+          echo "📦 컴포넌트: ${{ matrix.name }}"
+          echo "🔧 스캔 타입: ${{ matrix.scan_type }}"
+          
+          if [ "${{ matrix.scan_type }}" = "helm" ]; then
+            echo "📊 차트: ${{ matrix.chart_ref }}"
+            echo "⚙️ Values: ${{ matrix.values }}"
+          else
+            echo "📋 Kubernetes 매니페스트 직접 스캔"
+          fi
+          
+          if [ "${{ needs.detect.outputs.scan_mode }}" = "full_scan" ]; then
+            echo "::notice::전체 스캔 모드 - 워크플로 파일 변경으로 인한 전체 검사"
+          else
+            echo "::notice::변경 스캔 모드 - 변경된 컴포넌트만 검사"
+          fi
 
       # Helm v3 설치
       - name: Setup Helm
@@ -156,43 +249,87 @@ jobs:
       # Helm 저장소 추가
       - name: Add Helm repos
         run: |
+          echo "📥 Helm 저장소 추가 중..."
           helm repo add bitnami https://charts.bitnami.com/bitnami
           helm repo add goharbor https://helm.goharbor.io
           helm repo add argo https://argoproj.github.io/argo-helm
           helm repo add sonarqube https://SonarSource.github.io/helm-chart-sonarqube
           helm repo add grafana https://grafana.github.io/helm-charts
           helm repo update
+          echo "✅ Helm 저장소 업데이트 완료"
 
       # 디렉터리 생성
-      - name: Prepare dirs
-        run: mkdir -p rendered results
+      - name: Prepare directories
+        run: |
+          mkdir -p rendered results
+          echo "📁 디렉터리 생성 완료: rendered, results"
 
-      # Helm 템플릿 렌더링
+      # Helm 템플릿 렌더링 (Helm 차트인 경우)
       - name: Helm template (${{ matrix.name }})
+        if: matrix.scan_type == 'helm'
         env:
           NAME: ${{ matrix.name }}
           CHART: ${{ matrix.chart_ref }}
           VALUES: ${{ matrix.values }}
         run: |
-          set -eu
+          set -euo pipefail
+          echo "🎨 Helm 템플릿 렌더링: $NAME"
+          
           VALUES_FLAGS=""
           for v in $VALUES; do
             if [ -f "$v" ]; then
-              echo "Using values: $v"
+              echo "✅ Values 파일 사용: $v"
               VALUES_FLAGS="$VALUES_FLAGS -f $v"
             else
-              echo "Skip missing values: $v"
+              echo "⚠️ Values 파일 없음 (건너뜀): $v"
             fi
           done
+          
+          echo "🔧 실행 명령어: helm template $NAME $CHART $VALUES_FLAGS --namespace $NAME --create-namespace"
+          
           helm template "$NAME" "$CHART" $VALUES_FLAGS \
             --namespace "$NAME" \
             --create-namespace \
             > "rendered/${NAME}.yaml"
-          # 빈 파일 방지
-          test -s "rendered/${NAME}.yaml"
+          
+          # 렌더링 결과 확인
+          if [ ! -s "rendered/${NAME}.yaml" ]; then
+            echo "❌ 렌더링 실패: 빈 파일 생성됨"
+            exit 1
+          fi
+          
+          LINES=$(wc -l < "rendered/${NAME}.yaml")
+          SIZE=$(wc -c < "rendered/${NAME}.yaml")
+          echo "✅ 렌더링 완료: ${LINES}줄, ${SIZE}바이트"
+
+      # Kubernetes 매니페스트 복사 (순수 K8s 파일인 경우)
+      - name: Copy Kubernetes manifests (${{ matrix.name }})
+        if: matrix.scan_type == 'kubernetes'
+        env:
+          NAME: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          echo "📋 Kubernetes 매니페스트 복사: $NAME"
+          
+          # monitoring_o11y 디렉터리의 모든 YAML 파일을 하나로 합치기
+          find "$NAME" -name "*.yaml" -o -name "*.yml" | while read -r file; do
+            echo "📄 처리 중: $file"
+            echo "---" >> "rendered/${NAME}.yaml"
+            cat "$file" >> "rendered/${NAME}.yaml"
+          done
+          
+          # 결과 확인
+          if [ ! -s "rendered/${NAME}.yaml" ]; then
+            echo "❌ 매니페스트 파일을 찾을 수 없습니다"
+            exit 1
+          fi
+          
+          LINES=$(wc -l < "rendered/${NAME}.yaml")
+          SIZE=$(wc -c < "rendered/${NAME}.yaml")
+          echo "✅ 매니페스트 복사 완료: ${LINES}줄, ${SIZE}바이트"
 
       # Checkov 보안 검사
-      - name: Run Checkov on rendered/${{ matrix.name }}.yaml
+      - name: Run Checkov security scan
         uses: bridgecrewio/checkov-action@v12
         with:
           directory: rendered
@@ -202,22 +339,43 @@ jobs:
           output_file_path: results/${{ matrix.name }}.json,results/${{ matrix.name }}.sarif
           soft_fail: true
           log_level: WARNING
-          container_user: 0
 
-      # SARIF 파일 검사 (디버그용)
-      - name: Inspect SARIF (debug)
-        env:
-          CHECKOV_RESULTS: ${{ env.CHECKOV_RESULTS }}
+      # 스캔 결과 검증
+      - name: Validate scan results
+        if: always()
         run: |
-          ls -lah results || true
-          FILE="results/${{ matrix.name }}.sarif"
-          if [ ! -s "$FILE" ]; then
-            echo "::warning::No SARIF produced at $FILE (missing or empty)."
-            exit 0
+          echo "📊 스캔 결과 검증 중..."
+          ls -lah results/ || true
+          
+          JSON_FILE="results/${{ matrix.name }}.json"
+          SARIF_FILE="results/${{ matrix.name }}.sarif"
+          
+          # JSON 파일 검증
+          if [ -f "$JSON_FILE" ] && [ -s "$JSON_FILE" ]; then
+            JSON_SIZE=$(wc -c < "$JSON_FILE")
+            echo "✅ JSON 결과: ${JSON_SIZE}바이트"
+            
+            # JSON 유효성 검사
+            if python3 -m json.tool "$JSON_FILE" > /dev/null 2>&1; then
+              echo "✅ JSON 형식 유효"
+            else
+              echo "⚠️ JSON 형식 오류"
+            fi
+          else
+            echo "❌ JSON 결과 파일 없음 또는 빈 파일"
           fi
-          echo "SARIF size: $(wc -c < "$FILE") bytes"
-          head -n 20 "$FILE" | sed -e 's/::/--/g' || true
-
+          
+          # SARIF 파일 검증
+          if [ -f "$SARIF_FILE" ] && [ -s "$SARIF_FILE" ]; then
+            SARIF_SIZE=$(wc -c < "$SARIF_FILE")
+            echo "✅ SARIF 결과: ${SARIF_SIZE}바이트"
+            
+            # SARIF 미리보기 (처음 20줄)
+            echo "📄 SARIF 미리보기:"
+            head -n 20 "$SARIF_FILE" | sed -e 's/::/--/g' || true
+          else
+            echo "❌ SARIF 결과 파일 없음 또는 빈 파일"
+          fi
       # OpenAI API를 통한 보안 검사 결과 분석
       - name: Analyze security scan results with OpenAI
         if: always()
@@ -228,10 +386,13 @@ jobs:
           JSON_FILE="results/${{ matrix.name }}.json"
           
           if [ ! -f "$JSON_FILE" ] || [ ! -s "$JSON_FILE" ]; then
-            echo "No JSON results found for analysis"
-            echo "analysis_result=No security issues found or scan failed" >> $GITHUB_OUTPUT
+            echo "📄 JSON 결과 파일이 없거나 비어있습니다."
+            echo "analysis_result=보안 검사 결과를 찾을 수 없거나 스캔이 실패했습니다." >> $GITHUB_OUTPUT
+            echo "issue_count=0" >> $GITHUB_OUTPUT
             exit 0
           fi
+          
+          echo "🤖 OpenAI를 통한 보안 분석 시작..."
           
           # OpenAI API 호출을 위한 Python 스크립트 생성
           cat > analyze_security.py << 'EOF'
@@ -411,18 +572,22 @@ jobs:
           ")
           
           echo "issue_count=$ISSUE_COUNT" >> $GITHUB_OUTPUT
-
-      # Issue 생성 (보안 이슈가 있을 때)
+          echo "📊 발견된 보안 이슈: $ISSUE_COUNT개"
+      # GitHub Issue 생성 (보안 이슈가 있을 때)
       - name: Create security issue
         if: always() && steps.openai-analysis.outputs.issue_count != '0'
         uses: actions/github-script@v7
         env:
           ANALYSIS_RESULT: ${{ steps.openai-analysis.outputs.analysis_result }}
+          SCAN_MODE: ${{ needs.detect.outputs.scan_mode }}
         with:
           script: |
             const analysis = process.env.ANALYSIS_RESULT;
             const component = '${{ matrix.name }}';
             const issueCount = '${{ steps.openai-analysis.outputs.issue_count }}';
+            const scanMode = process.env.SCAN_MODE;
+            
+            console.log(`🔍 이슈 생성 시작: ${component} (${issueCount}개 이슈)`);
             
             // 보안 이슈가 있으면 Issue 생성
             if (issueCount && issueCount !== '0') {
@@ -474,6 +639,11 @@ jobs:
               const severityDisplay = severityBadges.join(' | ');
               const totalIssues = criticalCount + highCount + mediumCount + lowCount + unknownCount;
               
+              // 스캔 모드 표시
+              const scanModeText = scanMode === 'full_scan' 
+                ? '🔄 전체 스캔 (워크플로 변경)'
+                : '🎯 변경 스캔 (변경된 컴포넌트만)';
+              
               // 제목 생성
               const hasCriticalHigh = criticalCount > 0 || highCount > 0;
               const title = hasCriticalHigh 
@@ -484,7 +654,8 @@ jobs:
               const body = `## 📊 보안 이슈 요약
             
             **컴포넌트**: \`${component}\`  
-            **총 이슈 개수**: ${totalIssues}개
+            **총 이슈 개수**: ${totalIssues}개  
+            **스캔 모드**: ${scanModeText}
             
             ### 🎯 심각도별 분포
             ${severityDisplay}
@@ -505,22 +676,29 @@ jobs:
             ## 🔗 관련 링크
             - [워크플로우 실행 결과](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
             - [보안 정책 가이드](https://github.com/${{ github.repository }}/blob/main/SECURITY.md)
+            - [Checkov 문서](https://www.checkov.io/5.Policy%20Index/kubernetes.html)
             
             ---
-            *🤖 자동 생성된 보안 이슈입니다. 모든 이슈 해결 후 이 Issue를 닫아주세요.*`;
+            *🤖 자동 생성된 보안 이슈입니다. 모든 이슈 해결 후 이 Issue를 닫아주세요.*
+            *📅 생성 시간: ${new Date().toISOString()}*`;
               
-              const labels = ['security', 'checkov', component, priorityLabel];
+              const labels = ['security', 'checkov', component, priorityLabel, 'automated'];
               
-              github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title: title,
-                body: body,
-                labels: labels
-              });
-              
-              console.log(`✅ Issue 생성 완료: ${title}`);
-              console.log(`📊 심각도 분포: ${severityDisplay}`);
+              try {
+                const issue = await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title: title,
+                  body: body,
+                  labels: labels
+                });
+                
+                console.log(`✅ Issue 생성 완료: ${title}`);
+                console.log(`📊 심각도 분포: ${severityDisplay}`);
+                console.log(`🔗 Issue URL: ${issue.data.html_url}`);
+              } catch (error) {
+                console.error('❌ Issue 생성 실패:', error);
+              }
             }
 
       # Slack 알림 (웹훅 URL이 설정된 경우)
@@ -531,11 +709,18 @@ jobs:
           ANALYSIS_RESULT: ${{ steps.openai-analysis.outputs.analysis_result }}
           COMPONENT: ${{ matrix.name }}
           ISSUE_COUNT: ${{ steps.openai-analysis.outputs.issue_count }}
+          SCAN_MODE: ${{ needs.detect.outputs.scan_mode }}
         run: |
-          # 분석 결과를 파일로 저장 (특수 문자 안전 처리)
-          echo "$ANALYSIS_RESULT" > analysis_result.txt
+          echo "📢 Slack 알림 전송 중..."
           
-          # Slack 메시지 생성 (분석 결과는 요약만 포함)
+          # 스캔 모드 텍스트
+          if [ "$SCAN_MODE" = "full_scan" ]; then
+            SCAN_MODE_TEXT="🔄 전체 스캔 (워크플로 변경)"
+          else
+            SCAN_MODE_TEXT="🎯 변경 스캔 (변경된 컴포넌트만)"
+          fi
+          
+          # Slack 메시지 생성
           cat > slack_message.json << EOF
           {
             "text": "🔒 Kubernetes 보안 검사 결과",
@@ -560,11 +745,11 @@ jobs:
                   },
                   {
                     "type": "mrkdwn",
-                    "text": "*실행 시간:* $(date '+%Y-%m-%d %H:%M')"
+                    "text": "*스캔 모드:* ${SCAN_MODE_TEXT}"
                   },
                   {
                     "type": "mrkdwn",
-                    "text": "*워크플로우:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|GitHub에서 확인>"
+                    "text": "*실행 시간:* $(date '+%Y-%m-%d %H:%M')"
                   }
                 ]
               },
@@ -574,32 +759,52 @@ jobs:
                   "type": "mrkdwn",
                   "text": "📋 *보안 검사 완료*\n보안 이슈 ${ISSUE_COUNT}개가 발견되었습니다.\n상세 분석 결과는 GitHub Actions에서 확인하세요."
                 }
+              },
+              {
+                "type": "actions",
+                "elements": [
+                  {
+                    "type": "button",
+                    "text": {
+                      "type": "plain_text",
+                      "text": "워크플로우 보기"
+                    },
+                    "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                  }
+                ]
               }
             ]
           }
           EOF
           
           # Slack 웹훅으로 전송
-          curl -X POST -H 'Content-type: application/json' \
+          if curl -X POST -H 'Content-type: application/json' \
             --data @slack_message.json \
-            "$SLACK_WEBHOOK_URL"
+            "$SLACK_WEBHOOK_URL"; then
+            echo "✅ Slack 알림 전송 완료"
+          else
+            echo "❌ Slack 알림 전송 실패"
+          fi
 
-      # 포크 PR이면 권한 제한으로 실패하니 업로드 스킵
-      - name: Upload SARIF (${{ matrix.name }})
+      # SARIF 업로드 (포크 PR이 아닌 경우)
+      - name: Upload SARIF to GitHub Security
         if: |
           always() && (github.event_name != 'pull_request' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == false))
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: results/${{ matrix.name }}.sarif
           category: checkov-${{ matrix.name }}
+        continue-on-error: true
 
-      # SARIF 파일을 아티팩트로 업로드 (fallback)
-      - name: Upload SARIF as artifact (fallback)
+      # SARIF 파일을 아티팩트로 업로드 (백업)
+      - name: Upload SARIF as artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: sarif-${{ matrix.name }}
           path: results/${{ matrix.name }}.sarif
+          if-no-files-found: warn
+          retention-days: 30
 
       # JSON 결과를 아티팩트로 업로드
       - name: Upload JSON results as artifact
@@ -608,3 +813,31 @@ jobs:
         with:
           name: json-results-${{ matrix.name }}
           path: results/${{ matrix.name }}.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  # 스캔 완료 요약
+  summary:
+    needs: [detect, scan]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scan summary
+        run: |
+          echo "## 🔒 Checkov 보안 스캔 완료"
+          echo ""
+          echo "**스캔 모드**: ${{ needs.detect.outputs.scan_mode }}"
+          
+          if [ "${{ needs.detect.outputs.scan_mode }}" = "full_scan" ]; then
+            echo "**실행 이유**: 워크플로 파일 변경으로 인한 전체 스캔"
+          elif [ "${{ needs.detect.outputs.scan_mode }}" = "changed_scan" ]; then
+            echo "**실행 이유**: 변경된 컴포넌트 스캔"
+          else
+            echo "**실행 이유**: 변경사항 없음"
+          fi
+          
+          echo ""
+          echo "**스캔 결과**: ${{ needs.scan.result }}"
+          echo "**실행 시간**: $(date '+%Y-%m-%d %H:%M:%S UTC')"
+          echo ""
+          echo "상세 결과는 각 컴포넌트별 아티팩트에서 확인할 수 있습니다."
