@@ -74,8 +74,9 @@ jobs:
       - name: Set matrix and scan mode
         id: set-matrix
         run: |
-          # 전체 컴포넌트 매트릭스 정의
-          FULL_MATRIX='{
+          # 전체 컴포넌트 매트릭스를 임시 파일로 생성
+          cat > /tmp/full_matrix.json << 'EOF'
+          {
             "include": [
               {
                 "name": "argo-cd",
@@ -114,12 +115,20 @@ jobs:
                 "scan_type": "kubernetes"
               }
             ]
-          }'
+          }
+          EOF
+          
+          # JSON을 한 줄로 압축
+          FULL_MATRIX=$(cat /tmp/full_matrix.json | jq -c .)
           
           # 워크플로 파일이 변경된 경우 전체 스캔
           if [ "${{ steps.filter.outputs.workflows }}" = "true" ]; then
             echo "🔄 워크플로 파일 변경 감지 - 전체 스캔 모드"
-            echo "matrix=$FULL_MATRIX" >> $GITHUB_OUTPUT
+            {
+              echo "matrix<<EOF"
+              echo "$FULL_MATRIX"
+              echo "EOF"
+            } >> $GITHUB_OUTPUT
             echo "scan_mode=full_scan" >> $GITHUB_OUTPUT
             echo "::notice::워크플로 파일이 변경되어 모든 컴포넌트를 스캔합니다."
             exit 0
@@ -150,7 +159,11 @@ jobs:
           # 변경된 컴포넌트가 없으면 빈 매트릭스
           if [ -z "$CHANGED_COMPONENTS" ]; then
             echo "⏭️ 스캔 대상 디렉터리에 변경사항이 없습니다."
-            echo "matrix={\"include\":[]}" >> $GITHUB_OUTPUT
+            {
+              echo "matrix<<EOF"
+              echo '{"include":[]}'
+              echo "EOF"
+            } >> $GITHUB_OUTPUT
             echo "scan_mode=no_changes" >> $GITHUB_OUTPUT
             echo "::notice::변경된 스캔 대상이 없어 보안 검사를 건너뜁니다."
             exit 0
@@ -190,7 +203,11 @@ jobs:
           done
           
           CHANGED_MATRIX="{\"include\":[$MATRIX_ITEMS]}"
-          echo "matrix=$CHANGED_MATRIX" >> $GITHUB_OUTPUT
+          {
+            echo "matrix<<EOF"
+            echo "$CHANGED_MATRIX"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
           echo "scan_mode=changed_scan" >> $GITHUB_OUTPUT
           echo "::notice::변경된 컴포넌트만 스캔합니다: $CHANGED_COMPONENTS"
 
