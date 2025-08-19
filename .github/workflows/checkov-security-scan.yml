@@ -593,6 +593,7 @@ jobs:
       # GitHub Issue 생성 (보안 이슈가 있을 때)
       - name: Create security issue
         if: always() && steps.openai-analysis.outputs.issue_count != '0'
+        id: create-issue
         uses: actions/github-script@v7
         env:
           ANALYSIS_RESULT: ${{ steps.openai-analysis.outputs.analysis_result }}
@@ -713,20 +714,33 @@ jobs:
                 console.log(`✅ Issue 생성 완료: ${title}`);
                 console.log(`📊 심각도 분포: ${severityDisplay}`);
                 console.log(`🔗 Issue URL: ${issue.data.html_url}`);
+                
+                // Issue URL을 output으로 설정
+                core.setOutput('issue_url', issue.data.html_url);
+                core.setOutput('issue_number', issue.data.number);
+                
               } catch (error) {
                 console.error('❌ Issue 생성 실패:', error);
+                core.setOutput('issue_url', '');
+                core.setOutput('issue_number', '');
               }
+            } else {
+              // 보안 이슈가 없는 경우
+              core.setOutput('issue_url', '');
+              core.setOutput('issue_number', '');
             }
 
       # Slack 알림 (웹훅 URL이 설정된 경우)
       - name: Send Slack notification
-        if: always() && steps.openai-analysis.outputs.issue_count != '0' && env.SLACK_WEBHOOK_URL != ''
+        if: always() && env.SLACK_WEBHOOK_URL != ''
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           ANALYSIS_RESULT: ${{ steps.openai-analysis.outputs.analysis_result }}
           COMPONENT: ${{ matrix.name }}
           ISSUE_COUNT: ${{ steps.openai-analysis.outputs.issue_count }}
           SCAN_MODE: ${{ needs.detect.outputs.scan_mode }}
+          ISSUE_URL: ${{ steps.create-issue.outputs.issue_url }}
+          ISSUE_NUMBER: ${{ steps.create-issue.outputs.issue_number }}
         run: |
           echo "📢 Slack 알림 전송 중..."
           
@@ -735,6 +749,21 @@ jobs:
             SCAN_MODE_TEXT="🔄 전체 스캔 (워크플로 변경)"
           else
             SCAN_MODE_TEXT="🎯 변경 스캔 (변경된 컴포넌트만)"
+          fi
+          
+          # 보안 이슈 유무에 따른 메시지 및 링크 설정
+          if [ "$ISSUE_COUNT" != "0" ] && [ -n "$ISSUE_URL" ]; then
+            # 보안 이슈가 있는 경우 - Issue 링크 사용
+            MESSAGE_TEXT="📋 *보안 검사 완료*\n보안 이슈 ${ISSUE_COUNT}개가 발견되었습니다.\n상세 분석 결과 및 해결 가이드는 생성된 Issue에서 확인하세요."
+            BUTTON_TEXT="보안 이슈 확인"
+            LINK_URL="$ISSUE_URL"
+            HEADER_EMOJI="🚨"
+          else
+            # 보안 이슈가 없는 경우 - 워크플로 링크 사용
+            MESSAGE_TEXT="✅ *보안 검사 완료*\n보안 이슈가 발견되지 않았습니다.\n모든 보안 검사를 통과했습니다."
+            BUTTON_TEXT="워크플로우 보기"
+            LINK_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            HEADER_EMOJI="✅"
           fi
           
           # Slack 메시지 생성
@@ -746,7 +775,7 @@ jobs:
                 "type": "header",
                 "text": {
                   "type": "plain_text",
-                  "text": "🔒 보안 검사 결과 - ${COMPONENT}"
+                  "text": "${HEADER_EMOJI} 보안 검사 결과 - ${COMPONENT}"
                 }
               },
               {
@@ -758,7 +787,7 @@ jobs:
                   },
                   {
                     "type": "mrkdwn", 
-                    "text": "*발견된 이슈:* ${ISSUE_COUNT}개"
+                    "text": "*발견된 이슈:* ${ISSUE_COUNT:-0}개"
                   },
                   {
                     "type": "mrkdwn",
@@ -774,7 +803,7 @@ jobs:
                 "type": "section",
                 "text": {
                   "type": "mrkdwn",
-                  "text": "📋 *보안 검사 완료*\n보안 이슈 ${ISSUE_COUNT}개가 발견되었습니다.\n상세 분석 결과는 GitHub Actions에서 확인하세요."
+                  "text": "${MESSAGE_TEXT}"
                 }
               },
               {
@@ -784,9 +813,9 @@ jobs:
                     "type": "button",
                     "text": {
                       "type": "plain_text",
-                      "text": "워크플로우 보기"
+                      "text": "${BUTTON_TEXT}"
                     },
-                    "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    "url": "${LINK_URL}"
                   }
                 ]
               }
@@ -799,6 +828,11 @@ jobs:
             --data @slack_message.json \
             "$SLACK_WEBHOOK_URL"; then
             echo "✅ Slack 알림 전송 완료"
+            if [ "$ISSUE_COUNT" != "0" ] && [ -n "$ISSUE_URL" ]; then
+              echo "🔗 Issue 링크: $ISSUE_URL"
+            else
+              echo "✅ 보안 이슈 없음 - 워크플로 링크 사용"
+            fi
           else
             echo "❌ Slack 알림 전송 실패"
           fi
