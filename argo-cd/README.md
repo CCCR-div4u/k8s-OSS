@@ -21,15 +21,15 @@ helm repo update
 - Helm이 해당 URL에서 chart 목록을 가져올 수 있게 등록
 
 ```bash
-helm pull argo/argo-cd --version 7.7.17
+helm pull argo/argo-cd --version 8.2.5
 ```
 
 - Helm chart를 다운로드(pull)하는 명령어.
-- `argo` 저장소에서 `argo-cd` chart를 7.7.17 버전으로 받아옴.
+- `argo` 저장소에서 `argo-cd` chart를 8.2.5 버전으로 받아옴.
 -  `.tgz` 압축 파일 저장
 
 ```bash
-tar xvzf argo-cd-7.7.17.tgz
+tar xvzf argo-cd-8.2.5.tgz
 ```
 
 - 압축 파일(`.tgz`) 해제 명령어
@@ -49,7 +49,7 @@ aws acm list-certificates --query "CertificateSummaryList[?DomainName=='bluesunn
 **4) Values 파일 작성**
 
 ```bash
-vi my-values.yaml
+vi override-values.yaml
 ```
 
 - ARN, 도메인 주소 알맞게 설정
@@ -57,7 +57,7 @@ vi my-values.yaml
 **5) Helm으로 ArgoCD 설치**
 
 ```bash
-helm install argocd --namespace argocd -f my-values.yaml .
+helm install argocd --namespace argocd -f override-values.yaml .
 ```
 
 **6) 설치 확인**
@@ -65,6 +65,12 @@ helm install argocd --namespace argocd -f my-values.yaml .
 ```bash
 kubectl get pods -n argocd
 kubectl get svc -n argocd
+```
+
+**7) Keycloak 시크릿 추가**
+
+```bash
+kubectl -n argo-cd patch secret argocd-secret --patch='{"stringData": { "oidc.keycloak.clientSecret": "<REPLACE_WITH_CLIENT_SECRET>" }}'
 ```
 
 **7) 도메인 주소 접속**
