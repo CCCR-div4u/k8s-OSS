@@ -1,0 +1,609 @@
+name: 🔒 Kube-bench EKS Security Scan
+
+on:
+  schedule:
+    # 매일 오전 9시 (KST 기준 오전 6시 UTC)에 실행
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      cluster_name:
+        description: 'EKS 클러스터 이름'
+        required: false
+        default: 'default-cluster'
+      severity_threshold:
+        description: '알림 임계값 (CRITICAL, HIGH, MEDIUM, LOW)'
+        required: false
+        default: 'HIGH'
+        type: choice
+        options:
+          - CRITICAL
+          - HIGH
+          - MEDIUM
+          - LOW
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  security-events: write
+
+env:
+  CLUSTER_NAME: ${{ github.event.inputs.cluster_name || 'default-cluster' }}
+  SEVERITY_THRESHOLD: ${{ github.event.inputs.severity_threshold || 'HIGH' }}
+
+jobs:
+  kube-bench-scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: 🔧 Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION || 'ap-northeast-2' }}
+
+    - name: 🔧 Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'latest'
+
+    - name: 🔧 Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --region ${{ secrets.AWS_REGION || 'ap-northeast-2' }} --name ${{ env.CLUSTER_NAME }}
+        kubectl cluster-info
+
+    - name: 🔍 Run Kube-bench Security Scan
+      id: kube_bench_scan
+      run: |
+        # 타임스탬프 생성
+        TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+        echo "timestamp=$TIMESTAMP" >> $GITHUB_OUTPUT
+        
+        # kube-bench Job 실행
+        echo "🚀 Starting kube-bench security scan..."
+        
+        # EKS용 kube-bench Job 매니페스트 생성
+        cat > kube-bench-job.yaml << 'EOF'
+        apiVersion: batch/v1
+        kind: Job
+        metadata:
+          name: kube-bench-eks-scan
+          namespace: default
+        spec:
+          template:
+            spec:
+              hostPID: true
+              nodeSelector:
+                kubernetes.io/os: linux
+              tolerations:
+              - key: node-role.kubernetes.io/master
+                operator: Exists
+                effect: NoSchedule
+              containers:
+              - name: kube-bench
+                image: aquasec/kube-bench:latest
+                command: ["kube-bench"]
+                args: ["--benchmark", "eks-1.0.1", "--json"]
+                volumeMounts:
+                - name: var-lib-etcd
+                  mountPath: /var/lib/etcd
+                  readOnly: true
+                - name: var-lib-kubelet
+                  mountPath: /var/lib/kubelet
+                  readOnly: true
+                - name: var-lib-kube-scheduler
+                  mountPath: /var/lib/kube-scheduler
+                  readOnly: true
+                - name: var-lib-kube-controller-manager
+                  mountPath: /var/lib/kube-controller-manager
+                  readOnly: true
+                - name: etc-systemd
+                  mountPath: /etc/systemd
+                  readOnly: true
+                - name: lib-systemd
+                  mountPath: /lib/systemd/
+                  readOnly: true
+                - name: srv-kubernetes
+                  mountPath: /srv/kubernetes/
+                  readOnly: true
+                - name: etc-kubernetes
+                  mountPath: /etc/kubernetes
+                  readOnly: true
+                - name: usr-bin
+                  mountPath: /usr/local/mount-from-host/bin
+                  readOnly: true
+                - name: etc-cni-netd
+                  mountPath: /etc/cni/net.d/
+                  readOnly: true
+                - name: opt-cni-bin
+                  mountPath: /opt/cni/bin/
+                  readOnly: true
+              restartPolicy: Never
+              volumes:
+              - name: var-lib-etcd
+                hostPath:
+                  path: "/var/lib/etcd"
+              - name: var-lib-kubelet
+                hostPath:
+                  path: "/var/lib/kubelet"
+              - name: var-lib-kube-scheduler
+                hostPath:
+                  path: "/var/lib/kube-scheduler"
+              - name: var-lib-kube-controller-manager
+                hostPath:
+                  path: "/var/lib/kube-controller-manager"
+              - name: etc-systemd
+                hostPath:
+                  path: "/etc/systemd"
+              - name: lib-systemd
+                hostPath:
+                  path: "/lib/systemd"
+              - name: srv-kubernetes
+                hostPath:
+                  path: "/srv/kubernetes"
+              - name: etc-kubernetes
+                hostPath:
+                  path: "/etc/kubernetes"
+              - name: usr-bin
+                hostPath:
+                  path: "/usr/bin"
+              - name: etc-cni-netd
+                hostPath:
+                  path: "/etc/cni/net.d/"
+              - name: opt-cni-bin
+                hostPath:
+                  path: "/opt/cni/bin/"
+          backoffLimit: 2
+        EOF
+        
+        # Job 실행
+        kubectl apply -f kube-bench-job.yaml
+        
+        # Job 완료 대기 (최대 10분)
+        echo "⏳ Waiting for kube-bench scan to complete..."
+        kubectl wait --for=condition=complete --timeout=600s job/kube-bench-eks-scan
+        
+        # 결과 수집
+        echo "📊 Collecting scan results..."
+        kubectl logs job/kube-bench-eks-scan > kube-bench-results-${TIMESTAMP}.json
+        
+        # Job 정리
+        kubectl delete job kube-bench-eks-scan
+        
+        echo "✅ Kube-bench scan completed successfully"
+
+    - name: 📊 Process Scan Results
+      id: process_results
+      run: |
+        TIMESTAMP=${{ steps.kube_bench_scan.outputs.timestamp }}
+        RESULTS_FILE="kube-bench-results-${TIMESTAMP}.json"
+        
+        python3 << 'EOF'
+        import json
+        import os
+        import sys
+        from datetime import datetime
+        
+        timestamp = os.environ['TIMESTAMP']
+        results_file = f"kube-bench-results-{timestamp}.json"
+        
+        try:
+            with open(results_file, 'r') as f:
+                content = f.read()
+            
+            # JSON 파싱 시도
+            try:
+                results = json.loads(content)
+            except json.JSONDecodeError:
+                # JSON이 아닌 경우 텍스트로 처리
+                print("Results are not in JSON format, processing as text...")
+                results = {"raw_output": content}
+            
+            # 결과 분석
+            total_tests = 0
+            passed_tests = 0
+            failed_tests = 0
+            warnings = 0
+            
+            critical_issues = []
+            high_issues = []
+            medium_issues = []
+            low_issues = []
+            
+            if "Controls" in results:
+                for control in results["Controls"]:
+                    for test in control.get("tests", []):
+                        for result in test.get("results", []):
+                            total_tests += 1
+                            
+                            if result.get("test_result") == "PASS":
+                                passed_tests += 1
+                            elif result.get("test_result") == "FAIL":
+                                failed_tests += 1
+                                
+                                # 심각도 분류 (임시 로직)
+                                test_desc = result.get("test_desc", "").lower()
+                                if any(keyword in test_desc for keyword in ["encryption", "tls", "certificate", "authentication"]):
+                                    critical_issues.append(result)
+                                elif any(keyword in test_desc for keyword in ["authorization", "rbac", "network", "firewall"]):
+                                    high_issues.append(result)
+                                elif any(keyword in test_desc for keyword in ["logging", "audit", "monitoring"]):
+                                    medium_issues.append(result)
+                                else:
+                                    low_issues.append(result)
+                            elif result.get("test_result") == "WARN":
+                                warnings += 1
+            
+            # 요약 정보 생성
+            summary = {
+                "timestamp": timestamp,
+                "cluster_name": os.environ.get('CLUSTER_NAME', 'unknown'),
+                "total_tests": total_tests,
+                "passed_tests": passed_tests,
+                "failed_tests": failed_tests,
+                "warnings": warnings,
+                "pass_rate": round((passed_tests / total_tests * 100) if total_tests > 0 else 0, 2),
+                "critical_count": len(critical_issues),
+                "high_count": len(high_issues),
+                "medium_count": len(medium_issues),
+                "low_count": len(low_issues)
+            }
+            
+            # 상세 결과 저장
+            detailed_results = {
+                "summary": summary,
+                "critical_issues": critical_issues[:10],  # 상위 10개만
+                "high_issues": high_issues[:10],
+                "medium_issues": medium_issues[:5],
+                "low_issues": low_issues[:5],
+                "raw_results": results
+            }
+            
+            with open(f'kube-bench-analysis-{timestamp}.json', 'w') as f:
+                json.dump(detailed_results, f, indent=2)
+            
+            # GitHub Actions 출력 설정
+            with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                f.write(f"total_tests={total_tests}\n")
+                f.write(f"failed_tests={failed_tests}\n")
+                f.write(f"critical_count={len(critical_issues)}\n")
+                f.write(f"high_count={len(high_issues)}\n")
+                f.write(f"pass_rate={summary['pass_rate']}\n")
+                f.write(f"has_critical={'true' if len(critical_issues) > 0 else 'false'}\n")
+                f.write(f"has_high={'true' if len(high_issues) > 0 else 'false'}\n")
+                f.write(f"needs_attention={'true' if (len(critical_issues) > 0 or len(high_issues) > 0) else 'false'}\n")
+            
+            print(f"✅ Analysis completed:")
+            print(f"   Total tests: {total_tests}")
+            print(f"   Passed: {passed_tests}")
+            print(f"   Failed: {failed_tests}")
+            print(f"   Pass rate: {summary['pass_rate']}%")
+            print(f"   Critical issues: {len(critical_issues)}")
+            print(f"   High issues: {len(high_issues)}")
+            
+        except Exception as e:
+            print(f"❌ Error processing results: {e}")
+            sys.exit(1)
+        
+        EOF
+      env:
+        TIMESTAMP: ${{ steps.kube_bench_scan.outputs.timestamp }}
+
+    - name: 📋 Generate Security Report
+      id: generate_report
+      run: |
+        TIMESTAMP=${{ steps.kube_bench_scan.outputs.timestamp }}
+        
+        python3 << 'EOF'
+        import json
+        import os
+        from datetime import datetime
+        
+        timestamp = os.environ['TIMESTAMP']
+        
+        # 분석 결과 로드
+        with open(f'kube-bench-analysis-{timestamp}.json', 'r') as f:
+            analysis = json.load(f)
+        
+        summary = analysis['summary']
+        
+        # 보고서 생성
+        report = f"""# 🔒 Kube-bench EKS 보안 검사 보고서
+        
+        **검사 일시**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S KST')}
+        **클러스터**: {summary['cluster_name']}
+        **검사 ID**: {timestamp}
+        
+        ## 📊 검사 요약
+        
+        | 항목 | 수량 | 비율 |
+        |------|------|------|
+        | 전체 테스트 | {summary['total_tests']} | 100% |
+        | 통과 | {summary['passed_tests']} | {summary['pass_rate']}% |
+        | 실패 | {summary['failed_tests']} | {round((summary['failed_tests'] / summary['total_tests'] * 100) if summary['total_tests'] > 0 else 0, 2)}% |
+        | 경고 | {summary['warnings']} | {round((summary['warnings'] / summary['total_tests'] * 100) if summary['total_tests'] > 0 else 0, 2)}% |
+        
+        ## 🚨 심각도별 이슈 현황
+        
+        | 심각도 | 개수 | 상태 |
+        |--------|------|------|
+        | 🔴 Critical | {summary['critical_count']} | {'⚠️ 즉시 조치 필요' if summary['critical_count'] > 0 else '✅ 양호'} |
+        | 🟠 High | {summary['high_count']} | {'⚠️ 우선 조치 필요' if summary['high_count'] > 0 else '✅ 양호'} |
+        | 🟡 Medium | {summary['medium_count']} | {'📋 검토 필요' if summary['medium_count'] > 0 else '✅ 양호'} |
+        | 🟢 Low | {summary['low_count']} | {'📝 참고' if summary['low_count'] > 0 else '✅ 양호'} |
+        
+        ## 🔍 주요 발견 사항
+        """
+        
+        # Critical 이슈 추가
+        if analysis['critical_issues']:
+            report += "\n### 🔴 Critical 이슈\n\n"
+            for i, issue in enumerate(analysis['critical_issues'][:5], 1):
+                report += f"""**{i}. {issue.get('test_desc', 'Unknown test')}**
+        - **테스트 번호**: {issue.get('test_number', 'N/A')}
+        - **상태**: {issue.get('test_result', 'FAIL')}
+        - **설명**: {issue.get('remediation', '수정 방법이 제공되지 않았습니다.')}
+        
+        """
+        
+        # High 이슈 추가
+        if analysis['high_issues']:
+            report += "\n### 🟠 High 이슈\n\n"
+            for i, issue in enumerate(analysis['high_issues'][:5], 1):
+                report += f"""**{i}. {issue.get('test_desc', 'Unknown test')}**
+        - **테스트 번호**: {issue.get('test_number', 'N/A')}
+        - **상태**: {issue.get('test_result', 'FAIL')}
+        - **설명**: {issue.get('remediation', '수정 방법이 제공되지 않았습니다.')}
+        
+        """
+        
+        report += f"""
+        ## 📈 보안 점수
+        
+        **전체 보안 점수**: {summary['pass_rate']}% ({'🟢 우수' if summary['pass_rate'] >= 90 else '🟡 보통' if summary['pass_rate'] >= 70 else '🔴 개선 필요'})
+        
+        ## 🔧 권장 조치사항
+        
+        1. **즉시 조치**: Critical 및 High 심각도 이슈 우선 해결
+        2. **정기 검토**: Medium 심각도 이슈에 대한 보안 정책 검토
+        3. **모니터링**: 지속적인 보안 검사 및 모니터링 체계 구축
+        4. **문서화**: 보안 설정 변경 사항에 대한 문서화
+        
+        ## 📊 상세 결과
+        
+        <details>
+        <summary>상세 검사 결과 보기</summary>
+        
+        ```json
+        {json.dumps(analysis, indent=2, ensure_ascii=False)}
+        ```
+        
+        </details>
+        
+        ---
+        
+        **다음 검사 예정**: 내일 오전 9시 (KST)
+        **보고서 생성**: GitHub Actions 자동화
+        """
+        
+        # 보고서 파일 저장
+        with open(f'security-report-{timestamp}.md', 'w', encoding='utf-8') as f:
+            f.write(report)
+        
+        print("✅ Security report generated successfully")
+        
+        EOF
+      env:
+        TIMESTAMP: ${{ steps.kube_bench_scan.outputs.timestamp }}
+
+    - name: 📋 Create GitHub Issue
+      if: steps.process_results.outputs.needs_attention == 'true'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const timestamp = '${{ steps.kube_bench_scan.outputs.timestamp }}';
+          
+          // 보고서 내용 읽기
+          const reportContent = fs.readFileSync(`security-report-${timestamp}.md`, 'utf8');
+          
+          // 이슈 제목 생성
+          const criticalCount = '${{ steps.process_results.outputs.critical_count }}';
+          const highCount = '${{ steps.process_results.outputs.high_count }}';
+          const passRate = '${{ steps.process_results.outputs.pass_rate }}';
+          
+          let severity = '🟡 MEDIUM';
+          if (criticalCount > 0) severity = '🔴 CRITICAL';
+          else if (highCount > 0) severity = '🟠 HIGH';
+          
+          const issueTitle = `${severity} Kube-bench 보안 검사 결과 - ${new Date().toISOString().split('T')[0]} (통과율: ${passRate}%)`;
+          
+          // 기존 이슈 검색
+          const { data: existingIssues } = await github.rest.issues.listForRepo({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            labels: 'kube-bench,security',
+            state: 'open'
+          });
+          
+          // 오늘 날짜의 이슈가 있는지 확인
+          const today = new Date().toISOString().split('T')[0];
+          const todayIssue = existingIssues.find(issue => 
+            issue.title.includes(today)
+          );
+          
+          if (todayIssue) {
+            // 기존 이슈에 댓글 추가
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: todayIssue.number,
+              body: `## 🔄 업데이트된 검사 결과\n\n${reportContent}`
+            });
+            
+            console.log(`Updated existing issue #${todayIssue.number}`);
+          } else {
+            // 새 이슈 생성
+            const newIssue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: issueTitle,
+              body: reportContent,
+              labels: ['security', 'kube-bench', 'eks', 'automated']
+            });
+            
+            console.log(`Created new issue #${newIssue.data.number}`);
+          }
+
+    - name: 📱 Send Slack Notification
+      if: always()
+      run: |
+        python3 << 'EOF'
+        import json
+        import requests
+        import os
+        
+        # 결과 정보 수집
+        timestamp = '${{ steps.kube_bench_scan.outputs.timestamp }}'
+        total_tests = '${{ steps.process_results.outputs.total_tests }}'
+        failed_tests = '${{ steps.process_results.outputs.failed_tests }}'
+        critical_count = '${{ steps.process_results.outputs.critical_count }}'
+        high_count = '${{ steps.process_results.outputs.high_count }}'
+        pass_rate = '${{ steps.process_results.outputs.pass_rate }}'
+        cluster_name = os.environ.get('CLUSTER_NAME', 'unknown')
+        
+        # Slack 웹훅 URL
+        slack_webhook = os.environ.get('SLACK_WEBHOOK_URL_SCAN')
+        
+        if not slack_webhook:
+            print("⚠️ SLACK_WEBHOOK_URL_SCAN not configured")
+            exit(0)
+        
+        # 심각도에 따른 색상 및 이모지 결정
+        if int(critical_count) > 0:
+            color = "#FF0000"  # 빨간색
+            status_emoji = "🔴"
+            status_text = "CRITICAL"
+        elif int(high_count) > 0:
+            color = "#FF8C00"  # 주황색
+            status_emoji = "🟠"
+            status_text = "HIGH"
+        elif int(failed_tests) > 0:
+            color = "#FFD700"  # 노란색
+            status_emoji = "🟡"
+            status_text = "MEDIUM"
+        else:
+            color = "#00FF00"  # 초록색
+            status_emoji = "🟢"
+            status_text = "GOOD"
+        
+        # Slack 메시지 구성
+        slack_message = {
+            "text": f"{status_emoji} Kube-bench EKS 보안 검사 완료",
+            "attachments": [
+                {
+                    "color": color,
+                    "fields": [
+                        {
+                            "title": "클러스터",
+                            "value": cluster_name,
+                            "short": True
+                        },
+                        {
+                            "title": "검사 시간",
+                            "value": timestamp,
+                            "short": True
+                        },
+                        {
+                            "title": "전체 테스트",
+                            "value": total_tests,
+                            "short": True
+                        },
+                        {
+                            "title": "통과율",
+                            "value": f"{pass_rate}%",
+                            "short": True
+                        },
+                        {
+                            "title": "실패한 테스트",
+                            "value": failed_tests,
+                            "short": True
+                        },
+                        {
+                            "title": "심각도 상태",
+                            "value": f"{status_emoji} {status_text}",
+                            "short": True
+                        }
+                    ],
+                    "footer": "Kube-bench EKS Security Scanner",
+                    "ts": int(os.popen('date +%s').read().strip())
+                }
+            ]
+        }
+        
+        # Critical 또는 High 이슈가 있는 경우 추가 정보
+        if int(critical_count) > 0 or int(high_count) > 0:
+            slack_message["attachments"][0]["fields"].extend([
+                {
+                    "title": "🔴 Critical 이슈",
+                    "value": critical_count,
+                    "short": True
+                },
+                {
+                    "title": "🟠 High 이슈", 
+                    "value": high_count,
+                    "short": True
+                }
+            ])
+            
+            slack_message["attachments"].append({
+                "color": "#FF0000",
+                "text": "⚠️ *즉시 조치가 필요한 보안 이슈가 발견되었습니다!*\n상세 내용은 GitHub Issues를 확인해주세요.",
+                "actions": [
+                    {
+                        "type": "button",
+                        "text": "GitHub Issues 보기",
+                        "url": f"https://github.com/{os.environ.get('GITHUB_REPOSITORY', '')}/issues?q=is%3Aissue+is%3Aopen+label%3Akube-bench"
+                    }
+                ]
+            })
+        
+        # Slack으로 메시지 전송
+        try:
+            response = requests.post(slack_webhook, json=slack_message)
+            if response.status_code == 200:
+                print("✅ Slack notification sent successfully")
+            else:
+                print(f"❌ Failed to send Slack notification: {response.status_code}")
+                print(response.text)
+        except Exception as e:
+            print(f"❌ Error sending Slack notification: {e}")
+        
+        EOF
+      env:
+        SLACK_WEBHOOK_URL_SCAN: ${{ secrets.SLACK_WEBHOOK_URL_SCAN }}
+
+    - name: 📁 Upload Scan Results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: kube-bench-results-${{ steps.kube_bench_scan.outputs.timestamp }}
+        path: |
+          kube-bench-results-*.json
+          kube-bench-analysis-*.json
+          security-report-*.md
+        retention-days: 30
+
+    - name: 📊 Update Security Dashboard
+      if: always()
+      run: |
+        # 보안 대시보드 업데이트 (선택사항)
+        echo "📊 Security scan completed at $(date)"
+        echo "Results uploaded to artifacts for historical tracking"
+        
+        # 향후 확장: 메트릭을 외부 모니터링 시스템으로 전송
+        # 예: Prometheus, CloudWatch, Datadog 등

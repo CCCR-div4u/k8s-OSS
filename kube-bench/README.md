@@ -11,10 +11,13 @@ Kube-bench는 Kubernetes 클러스터가 CIS Kubernetes Benchmark에서 정의�
 ```
 kube-bench/
 ├── README.md                    # 이 파일
+├── AUTOMATED_SCAN_SETUP.md     # 🆕 자동화 스캔 설정 가이드
 ├── installation/
 │   ├── job-eks.yaml            # EKS용 kube-bench Job
 │   ├── job-master.yaml         # 마스터 노드용 Job
 │   ├── job-node.yaml           # 워커 노드용 Job
+│   ├── cronjob-scheduled.yaml  # 스케줄된 CronJob
+│   ├── daemonset-monitor.yaml  # 지속적 모니터링용 DaemonSet
 │   └── installation-guide.md   # 설치 가이드
 ├── configs/
 │   ├── config-eks.yaml         # EKS 전용 설정
@@ -30,7 +33,31 @@ kube-bench/
 
 ## 🚀 빠른 시작
 
-### 1. EKS 클러스터에서 실행
+### 🤖 자동화된 보안 검사 (권장)
+
+**GitHub Actions를 통한 완전 자동화된 보안 검사**
+
+```bash
+# 1. 설정 가이드 확인
+cat AUTOMATED_SCAN_SETUP.md
+
+# 2. 워크플로우 테스트
+../scripts/test-kube-bench-workflow.sh -c your-cluster-name
+
+# 3. GitHub Actions에서 자동 실행 (매일 오전 9시)
+# 또는 수동으로 워크플로우 실행
+```
+
+**주요 기능:**
+- ⏰ 매일 자동 실행 (스케줄 조정 가능)
+- 📊 상세 보안 보고서 자동 생성
+- 🚨 GitHub Issues로 결과 보고
+- 📱 Slack 알림 지원
+- 📁 결과 아티팩트 장기 보관
+
+### 🔧 수동 실행
+
+#### 1. EKS 클러스터에서 실행
 ```bash
 # EKS용 kube-bench Job 실행
 kubectl apply -f installation/job-eks.yaml
@@ -39,7 +66,7 @@ kubectl apply -f installation/job-eks.yaml
 kubectl logs job/kube-bench-eks
 ```
 
-### 2. 일반 Kubernetes 클러스터에서 실행
+#### 2. 일반 Kubernetes 클러스터에서 실행
 ```bash
 # 마스터 노드 검사
 kubectl apply -f installation/job-master.yaml
@@ -48,7 +75,7 @@ kubectl apply -f installation/job-master.yaml
 kubectl apply -f installation/job-node.yaml
 ```
 
-### 3. 스크립트를 통한 실행
+#### 3. 스크립트를 통한 실행
 ```bash
 # 전체 벤치마크 실행
 ./scripts/run-benchmark.sh

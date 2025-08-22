@@ -1,0 +1,283 @@
+name: 🤖 AI-Powered Security Analysis
+
+on:
+  workflow_run:
+    workflows: ["Render Helm → Checkov (Kubernetes)"]
+    types:
+      - completed
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  security-events: write
+
+jobs:
+  ai-analysis:
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success'
+    
+    steps:
+    - name: 📥 Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: 📊 Download Checkov Results
+      uses: actions/download-artifact@v4
+      with:
+        name: checkov-results
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        run-id: ${{ github.event.workflow_run.id }}
+
+    - name: 🔍 Process Results for AI Analysis
+      id: process_results
+      run: |
+        python3 << 'EOF'
+        import json
+        import os
+        
+        # 결과 파일들 확인
+        result_files = [f for f in os.listdir('.') if f.startswith('checkov-') and f.endswith('.json')]
+        
+        if not result_files:
+          print("No Checkov results found")
+          exit(0)
+        
+        all_issues = []
+        total_failed = 0
+        
+        for file in result_files:
+          with open(file, 'r') as f:
+            results = json.load(f)
+          
+          failed_checks = results.get("results", {}).get("failed_checks", [])
+          total_failed += len(failed_checks)
+          
+          for check in failed_checks:
+            all_issues.append({
+              "source_file": file,
+              "check_id": check.get("check_id"),
+              "check_name": check.get("check_name"),
+              "severity": check.get("severity"),
+              "file_path": check.get("file_path"),
+              "file_line_range": check.get("file_line_range"),
+              "description": check.get("description"),
+              "guideline": check.get("guideline"),
+              "resource": check.get("resource"),
+              "code_block": check.get("code_block", "")
+            })
+        
+        # 심각도별 정렬
+        severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+        all_issues.sort(key=lambda x: severity_order.get(x["severity"], 4))
+        
+        # AI 입력 데이터 생성
+        ai_input = {
+          "summary": {
+            "total_issues": total_failed,
+            "critical": len([i for i in all_issues if i["severity"] == "CRITICAL"]),
+            "high": len([i for i in all_issues if i["severity"] == "HIGH"]),
+            "medium": len([i for i in all_issues if i["severity"] == "MEDIUM"]),
+            "low": len([i for i in all_issues if i["severity"] == "LOW"])
+          },
+          "top_issues": all_issues[:15],  # 상위 15개 이슈만
+          "files_affected": list(set([i["file_path"] for i in all_issues]))
+        }
+        
+        with open('ai-input.json', 'w') as f:
+          json.dump(ai_input, f, indent=2)
+        
+        # GitHub Actions 출력
+        print(f"total_issues={total_failed}")
+        print(f"critical_issues={ai_input['summary']['critical']}")
+        
+        # 환경 변수로 설정
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+          f.write(f"total_issues={total_failed}\n")
+          f.write(f"critical_issues={ai_input['summary']['critical']}\n")
+          f.write(f"has_issues={'true' if total_failed > 0 else 'false'}\n")
+        
+        EOF
+
+    - name: 🤖 AI Security Analysis
+      if: steps.process_results.outputs.has_issues == 'true'
+      run: |
+        python3 << 'EOF'
+        import json
+        import requests
+        import os
+        
+        # AI 입력 데이터 읽기
+        with open('ai-input.json', 'r') as f:
+          data = json.load(f)
+        
+        # AI 프롬프트 생성
+        prompt = f"""
+        You are a Kubernetes security expert. Analyze the following Checkov security scan results and provide:
+        
+        1. **Priority Assessment**: Rank issues by security impact
+        2. **Specific Fixes**: Provide exact YAML code changes
+        3. **Security Rationale**: Explain why each fix is important
+        4. **Implementation Order**: Suggest the order to fix issues
+        
+        ## Scan Summary
+        - Total Issues: {data['summary']['total_issues']}
+        - Critical: {data['summary']['critical']}
+        - High: {data['summary']['high']}
+        - Medium: {data['summary']['medium']}
+        - Low: {data['summary']['low']}
+        
+        ## Top Security Issues:
+        """
+        
+        for i, issue in enumerate(data['top_issues'][:10], 1):
+          prompt += f"""
+        ### {i}. {issue['check_id']}: {issue['check_name']}
+        - **Severity**: {issue['severity']}
+        - **File**: {issue['file_path']}
+        - **Resource**: {issue['resource']}
+        - **Description**: {issue['description']}
+        
+        **Current Code:**
+        ```yaml
+        {issue['code_block']}
+        ```
+        """
+        
+        prompt += """
+        
+        Please provide:
+        1. Top 5 priority fixes with before/after YAML examples
+        2. Security impact explanation for each
+        3. Step-by-step implementation guide
+        4. Any additional security recommendations
+        
+        Format your response in clear sections with actionable code examples.
+        """
+        
+        # OpenAI API 호출 (예시)
+        if os.environ.get('OPENAI_API_KEY'):
+          response = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+              "Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
+              "Content-Type": "application/json"
+            },
+            json={
+              "model": "gpt-4",
+              "messages": [{"role": "user", "content": prompt}],
+              "max_tokens": 3000,
+              "temperature": 0.1
+            }
+          )
+          
+          if response.status_code == 200:
+            ai_response = response.json()
+            analysis = ai_response['choices'][0]['message']['content']
+            
+            with open('ai-security-analysis.md', 'w') as f:
+              f.write(f"""# 🤖 AI Security Analysis Report
+        
+        **Generated**: {os.popen('date').read().strip()}
+        **Total Issues Found**: {data['summary']['total_issues']}
+        **Critical Issues**: {data['summary']['critical']}
+        
+        ---
+        
+        {analysis}
+        
+        ---
+        
+        ## Files Affected
+        {chr(10).join([f"- {file}" for file in data['files_affected']])}
+        
+        ## Raw Data
+        <details>
+        <summary>Click to view detailed scan results</summary>
+        
+        ```json
+        {json.dumps(data, indent=2)}
+        ```
+        
+        </details>
+        """)
+            
+            print("✅ AI analysis completed successfully")
+          else:
+            print(f"❌ AI analysis failed: {response.status_code}")
+            print(response.text)
+        else:
+          print("⚠️ No AI API key configured")
+        
+        EOF
+      env:
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+    - name: 📋 Create Security Analysis Issue
+      if: steps.process_results.outputs.critical_issues > 0
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          
+          let analysisContent = '';
+          if (fs.existsSync('ai-security-analysis.md')) {
+            analysisContent = fs.readFileSync('ai-security-analysis.md', 'utf8');
+          } else {
+            analysisContent = 'AI analysis not available. Please check the workflow logs.';
+          }
+          
+          const issueTitle = `🚨 Critical Security Issues Found - ${new Date().toISOString().split('T')[0]}`;
+          
+          await github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: issueTitle,
+            body: analysisContent,
+            labels: ['security', 'critical', 'ai-analysis', 'checkov']
+          });
+
+    - name: 💬 Comment on Latest PR
+      if: steps.process_results.outputs.has_issues == 'true'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          
+          // 최근 PR 찾기
+          const { data: prs } = await github.rest.pulls.list({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            state: 'open',
+            sort: 'updated',
+            direction: 'desc',
+            per_page: 1
+          });
+          
+          if (prs.length > 0) {
+            let analysisContent = '';
+            if (fs.existsSync('ai-security-analysis.md')) {
+              analysisContent = fs.readFileSync('ai-security-analysis.md', 'utf8');
+            } else {
+              analysisContent = `## 🤖 Security Analysis
+              
+              Security issues were found but AI analysis is not available.
+              Please check the [workflow run](${context.payload.workflow_run.html_url}) for details.`;
+            }
+            
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prs[0].number,
+              body: analysisContent
+            });
+          }
+
+    - name: 📁 Upload Analysis Results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ai-security-analysis-${{ github.run_number }}
+        path: |
+          ai-input.json
+          ai-security-analysis.md
+        retention-days: 30
