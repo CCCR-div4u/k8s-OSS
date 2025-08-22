@@ -53,7 +53,14 @@ sealed-secrets-controller-7b9c8c4d9f-xxxxx   1/1   Running   0   30s
 키가 손실되면 기존 SealedSecret을 복호화할 수 없습니다.
 
 ```bash
-kubectl -n kube-system get secret sealed-secrets-key -o yaml > sealed-secrets-key-backup.yaml
+kubectl get secret -n kube-system | grep sealed-secrets-key
+```
+
+시크릿 이름은 Helm 정책상 sealed-secrets-key 뒤에 랜덤 문자열이 붙어 있는 이름으로 생성되므로 secret 이름을 확인하고 다음 명령어를 실행하세요.
+
+
+```bash
+kubectl -n kube-system get secret sealed-secrets-key{랜덤문자열} -o yaml > sealed-secrets-key-backup.yaml
 ```
 👉 백업 파일은 안전한 스토리지(S3, Vault, 암호화된 Git 리포 등)에 보관하세요.
 
