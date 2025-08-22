@@ -1,0 +1,82 @@
+# k6 Operator Helm Values - Simplified for ACM + External DNS
+# ACM 인증서와 external-dns를 사용하는 간소화된 설정
+
+# =============================================================================
+# 필수 설정 - 사용자가 수정해야 할 부분
+# =============================================================================
+
+# Ingress 설정 (ALB + ACM + External DNS)
+ingress:
+  enabled: true
+  className: alb
+  
+  annotations:
+    # ALB 기본 설정
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    
+    # ACM 인증서 ARN (필수 수정 항목)
+    alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:ap-northeast-2:YOUR_ACCOUNT_ID:certificate/YOUR_CERTIFICATE_ID"
+    
+    # External DNS 설정 (Route53 자동 레코드 생성)
+    external-dns.alpha.kubernetes.io/hostname: "k6-operator.your-domain.com"
+    
+    # 헬스체크 설정
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: '30'
+    
+    # 태그 설정 (선택사항)
+    alb.ingress.kubernetes.io/tags: "Environment=production,Service=k6-operator"
+
+  # 호스트 설정 (수정 필요)
+  hosts:
+    - host: k6-operator.your-domain.com  # 실제 도메인으로 변경
+      paths:
+        - path: /
+          pathType: Prefix
+
+# =============================================================================
+# 기본 설정 (일반적으로 수정 불필요)
+# =============================================================================
+
+# 오퍼레이터 리소스 설정
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# 서비스 설정
+service:
+  type: ClusterIP
+  port: 8080
+
+# RBAC 설정
+rbac:
+  create: true
+
+# 서비스 어카운트 설정
+serviceAccount:
+  create: true
+  name: k6-operator
+
+# 보안 설정
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+
+# 웹훅 설정
+webhook:
+  enabled: true
+  port: 9443
+
+# CRD 설치
+crds:
+  install: true

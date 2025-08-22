@@ -1,0 +1,516 @@
+name: Render Helm → Checkov (Kubernetes)
+
+on:
+  pull_request:
+    paths:
+      - "argo-cd/**"
+      - "harbor/**"
+      - "keycloak/**"
+      - "sonarqube/**"
+      - "thanos/**"
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/checkov-security-scan.yml'
+      - "argo-cd/**"
+      - "harbor/**"
+      - "keycloak/**"
+      - "sonarqube/**"
+      - "thanos/**"
+
+permissions:
+  contents: read
+  security-events: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: checkov-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  render-and-scan:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ── 디렉터리별: 차트/값 파일 지정 ──
+          - name: argo-cd
+            chart_ref: argo/argo-cd
+            values: "argo-cd/my-values.yaml"
+          - name: harbor
+            chart_ref: goharbor/harbor
+            values: "harbor/override-values.yaml"
+          - name: keycloak
+            chart_ref: bitnami/keycloak
+            values: "keycloak/installation/helm-values.yaml"
+          - name: sonarqube
+            chart_ref: sonarqube/sonarqube
+            values: "sonarqube/override-values.yaml"
+          - name: thanos
+            chart_ref: bitnami/thanos
+            values: "thanos/values/values.yaml"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Helm v3 설치
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      # 필요한 차트 리포 등록
+      - name: Add Helm repos
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm repo add goharbor https://helm.goharbor.io
+          helm repo add argo https://argoproj.github.io/argo-helm
+          helm repo add sonarqube https://SonarSource.github.io/helm-chart-sonarqube
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm repo update
+
+      - name: Prepare dirs
+        run: |
+          mkdir -p rendered results
+
+      # values가 존재할 때만 -f 로 붙여서 렌더
+      - name: Helm template (${{ matrix.name }})
+        env:
+          NAME: ${{ matrix.name }}
+          CHART: ${{ matrix.chart_ref }}
+          VALUES: ${{ matrix.values }}
+        run: |
+          set -euo pipefail
+          VALUES_FLAGS=""
+          for v in $VALUES; do
+            if [ -f "$v" ]; then
+              echo "Using values: $v"
+              VALUES_FLAGS="$VALUES_FLAGS -f $v"
+            else
+              echo "Skip missing values: $v"
+            fi
+          done
+          helm template "$NAME" "$CHART" $VALUES_FLAGS \
+            --namespace "$NAME" \
+            --create-namespace \
+            > "rendered/${NAME}.yaml"
+          # 빈 파일 방지
+          test -s "rendered/${NAME}.yaml"
+
+      # 컨테이너 기반 Checkov 액션으로 렌더 결과 스캔
+      - name: Run Checkov on rendered/${{ matrix.name }}.yaml
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: rendered
+          framework: kubernetes
+          quiet: true
+          output_format: json,sarif
+          output_file_path: results/${{ matrix.name }}.json,results/${{ matrix.name }}.sarif
+          soft_fail: true
+
+      # 업로드 전 결과 파일 유효성/디버그
+      - name: Inspect SARIF (debug)
+        if: always()
+        run: |
+          ls -lah results || true
+          FILE="results/${{ matrix.name }}.sarif"
+          if [ ! -s "$FILE" ]; then
+            echo "::warning::No SARIF produced at $FILE (missing or empty)."
+            exit 0
+          fi
+          echo "SARIF size: $(wc -c < "$FILE") bytes"
+          head -n 20 "$FILE" | sed -e 's/::/--/g' || true
+
+      # OpenAI API를 통한 보안 검사 결과 분석
+      - name: Analyze security scan results with OpenAI
+        if: always()
+        id: openai-analysis
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          JSON_FILE="results/${{ matrix.name }}.json"
+          
+          if [ ! -f "$JSON_FILE" ] || [ ! -s "$JSON_FILE" ]; then
+            echo "No JSON results found for analysis"
+            echo "analysis_result=No security issues found or scan failed" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # OpenAI API 호출을 위한 Python 스크립트 생성
+          cat > analyze_security.py << 'EOF'
+          import json
+          import os
+          import sys
+          import requests
+          
+          def analyze_checkov_results(json_file):
+              try:
+                  with open(json_file, 'r') as f:
+                      data = json.load(f)
+                  
+                  # Checkov 결과에서 실패한 검사들 추출
+                  failed_checks = data.get('results', {}).get('failed_checks', [])
+                  
+                  if not failed_checks:
+                      return "✅ 보안 검사 통과: 발견된 보안 이슈가 없습니다."
+                  
+                  # 심각도별 분류
+                  critical_issues = []
+                  high_issues = []
+                  medium_issues = []
+                  low_issues = []
+                  
+                  for check in failed_checks:
+                      severity = check.get('severity')
+                      if severity:
+                          severity = severity.upper()
+                      else:
+                          severity = 'UNKNOWN'
+                      issue_info = {
+                          'check_id': check.get('check_id', 'N/A'),
+                          'check_name': check.get('check_name', 'N/A'),
+                          'file_path': check.get('file_path', 'N/A'),
+                          'resource': check.get('resource', 'N/A'),
+                          'description': check.get('description', 'N/A')
+                      }
+                      
+                      if severity == 'CRITICAL':
+                          critical_issues.append(issue_info)
+                      elif severity == 'HIGH':
+                          high_issues.append(issue_info)
+                      elif severity == 'MEDIUM':
+                          medium_issues.append(issue_info)
+                      else:
+                          low_issues.append(issue_info)
+                  
+                  # OpenAI API 호출
+                  api_key = os.getenv('OPENAI_API_KEY')
+                  if not api_key:
+                      return generate_basic_report(critical_issues, high_issues, medium_issues, low_issues)
+                  
+                  prompt = f"""
+          다음은 Kubernetes 보안 검사(Checkov) 결과입니다. 엔지니어에게 전달할 보고서를 한국어로 작성해주세요.
+          
+          Critical 이슈: {len(critical_issues)}개
+          High 이슈: {len(high_issues)}개  
+          Medium 이슈: {len(medium_issues)}개
+          Low 이슈: {len(low_issues)}개
+          
+          상세 이슈들:
+          {json.dumps({'critical': critical_issues, 'high': high_issues, 'medium': medium_issues, 'low': low_issues}, indent=2, ensure_ascii=False)}
+          
+          다음 형식으로 보고서를 작성해주세요:
+          1. 요약 (전체적인 보안 상태)
+          2. 우선순위별 이슈 분석
+          3. 권장 조치사항
+          4. 추가 검토가 필요한 사항
+          
+          보고서는 간결하고 실행 가능한 내용으로 작성해주세요.
+          """
+                  
+                  try:
+                      response = requests.post(
+                          'https://api.openai.com/v1/chat/completions',
+                          headers={
+                              'Authorization': f'Bearer {api_key}',
+                              'Content-Type': 'application/json'
+                          },
+                          json={
+                              'model': 'gpt-4o-mini',
+                              'messages': [
+                                  {'role': 'system', 'content': '당신은 Kubernetes 보안 전문가입니다. 보안 검사 결과를 분석하여 엔지니어에게 명확하고 실행 가능한 보고서를 제공합니다.'},
+                                  {'role': 'user', 'content': prompt}
+                              ],
+                              'max_tokens': 2000,
+                              'temperature': 0.3
+                          },
+                          timeout=30
+                      )
+                      
+                      if response.status_code == 200:
+                          result = response.json()
+                          return result['choices'][0]['message']['content']
+                      else:
+                          print(f"OpenAI API 오류: {response.status_code}")
+                          return generate_basic_report(critical_issues, high_issues, medium_issues, low_issues)
+                          
+                  except Exception as e:
+                      print(f"OpenAI API 호출 실패: {e}")
+                      return generate_basic_report(critical_issues, high_issues, medium_issues, low_issues)
+                      
+              except Exception as e:
+                  return f"❌ 분석 실패: {str(e)}"
+          
+          def generate_basic_report(critical, high, medium, low):
+              total_issues = len(critical) + len(high) + len(medium) + len(low)
+              
+              report = f"""## 🔒 Kubernetes 보안 검사 결과
+          
+          ### 📊 요약
+          - **총 이슈**: {total_issues}개
+          - **Critical**: {len(critical)}개 🔴
+          - **High**: {len(high)}개 🟠  
+          - **Medium**: {len(medium)}개 🟡
+          - **Low**: {len(low)}개 ⚪
+          
+          ### 🚨 우선 조치 필요 (Critical + High)
+          """
+              
+              priority_issues = critical + high
+              if priority_issues:
+                  for i, issue in enumerate(priority_issues[:5], 1):  # 상위 5개만 표시
+                      report += f"""
+          **{i}. {issue['check_name']}**
+          - 파일: `{issue['file_path']}`
+          - 리소스: `{issue['resource']}`
+          - 설명: {issue['description']}
+          """
+              else:
+                  report += "\n✅ 우선 조치가 필요한 Critical/High 이슈가 없습니다."
+              
+              if len(priority_issues) > 5:
+                  report += f"\n\n*추가로 {len(priority_issues) - 5}개의 우선순위 이슈가 더 있습니다.*"
+              
+              report += f"""
+          
+          ### 📋 권장 조치사항
+          1. Critical/High 이슈를 우선적으로 해결하세요
+          2. 보안 정책 및 네트워크 설정을 검토하세요  
+          3. 컨테이너 이미지 보안을 강화하세요
+          4. RBAC 설정을 점검하세요
+          
+          전체 상세 결과는 GitHub Actions 아티팩트에서 확인할 수 있습니다.
+          """
+              
+              return report
+          
+          if __name__ == "__main__":
+              if len(sys.argv) != 2:
+                  print("Usage: python analyze_security.py <json_file>")
+                  sys.exit(1)
+              
+              result = analyze_checkov_results(sys.argv[1])
+              print(result)
+          EOF
+          
+          # Python 스크립트 실행
+          python3 analyze_security.py "$JSON_FILE" > analysis_result.txt
+          
+          # GitHub Output에 결과 저장 (멀티라인 처리)
+          echo "analysis_result<<EOF" >> $GITHUB_OUTPUT
+          cat analysis_result.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          # 이슈 개수 확인
+          ISSUE_COUNT=$(python3 -c "
+          import json
+          try:
+              with open('$JSON_FILE', 'r') as f:
+                  data = json.load(f)
+              failed_checks = data.get('results', {}).get('failed_checks', [])
+              print(len(failed_checks))
+          except:
+              print(0)
+          ")
+          
+          echo "issue_count=$ISSUE_COUNT" >> $GITHUB_OUTPUT
+
+      # Issue 생성 (보안 이슈가 있을 때)
+      - name: Create security issue
+        if: always() && steps.openai-analysis.outputs.issue_count != '0'
+        uses: actions/github-script@v7
+        env:
+          ANALYSIS_RESULT: ${{ steps.openai-analysis.outputs.analysis_result }}
+        with:
+          script: |
+            const analysis = process.env.ANALYSIS_RESULT;
+            const component = '${{ matrix.name }}';
+            const issueCount = '${{ steps.openai-analysis.outputs.issue_count }}';
+            
+            // 보안 이슈가 있으면 Issue 생성
+            if (issueCount && issueCount !== '0') {
+              // 심각도별 이슈 개수 분석
+              const fs = require('fs');
+              let criticalCount = 0;
+              let highCount = 0;
+              let mediumCount = 0;
+              let lowCount = 0;
+              let unknownCount = 0;
+              let priorityLabel = 'low';
+              
+              try {
+                const jsonFile = `results/${component}.json`;
+                if (fs.existsSync(jsonFile)) {
+                  const data = JSON.parse(fs.readFileSync(jsonFile, 'utf8'));
+                  const failedChecks = data.results?.failed_checks || [];
+                  
+                  failedChecks.forEach(check => {
+                    const severity = check.severity?.toUpperCase() || 'UNKNOWN';
+                    switch(severity) {
+                      case 'CRITICAL': criticalCount++; break;
+                      case 'HIGH': highCount++; break;
+                      case 'MEDIUM': mediumCount++; break;
+                      case 'LOW': lowCount++; break;
+                      default: unknownCount++; break;
+                    }
+                  });
+                  
+                  // 우선순위 라벨 결정
+                  if (criticalCount > 0) priorityLabel = 'critical';
+                  else if (highCount > 0) priorityLabel = 'high';
+                  else if (mediumCount > 0) priorityLabel = 'medium';
+                  else priorityLabel = 'low';
+                }
+              } catch (e) {
+                console.log('JSON 파일 읽기 실패:', e);
+                unknownCount = parseInt(issueCount) || 0;
+              }
+              
+              // 심각도별 이모지와 개수 표시
+              const severityBadges = [];
+              if (criticalCount > 0) severityBadges.push(`🔴 Critical: ${criticalCount}`);
+              if (highCount > 0) severityBadges.push(`🟠 High: ${highCount}`);
+              if (mediumCount > 0) severityBadges.push(`🟡 Medium: ${mediumCount}`);
+              if (lowCount > 0) severityBadges.push(`⚪ Low: ${lowCount}`);
+              if (unknownCount > 0) severityBadges.push(`⚫ Unknown: ${unknownCount}`);
+              
+              const severityDisplay = severityBadges.join(' | ');
+              const totalIssues = criticalCount + highCount + mediumCount + lowCount + unknownCount;
+              
+              // 제목 생성
+              const hasCriticalHigh = criticalCount > 0 || highCount > 0;
+              const title = hasCriticalHigh 
+                ? `🚨 긴급 보안 이슈 - ${component} (총 ${totalIssues}개)`
+                : `🔒 보안 검토 필요 - ${component} (총 ${totalIssues}개)`;
+              
+              // 이슈 본문 생성
+              const body = `## 📊 보안 이슈 요약
+            
+            **컴포넌트**: \`${component}\`  
+            **총 이슈 개수**: ${totalIssues}개
+            
+            ### 🎯 심각도별 분포
+            ${severityDisplay}
+            
+            ---
+            
+            ${analysis}
+            
+            ## 📋 해결 체크리스트
+            ${criticalCount > 0 ? '- [ ] 🔴 **Critical 이슈 즉시 해결** (보안 위험 높음)' : ''}
+            ${highCount > 0 ? '- [ ] 🟠 **High 이슈 우선 해결** (보안 위험 있음)' : ''}
+            ${mediumCount > 0 ? '- [ ] 🟡 **Medium 이슈 검토** (보안 개선 필요)' : ''}
+            ${lowCount > 0 ? '- [ ] ⚪ **Low 이슈 검토** (보안 강화 권장)' : ''}
+            - [ ] 📝 수정사항 적용 및 테스트
+            - [ ] 🔄 재검사 수행
+            - [ ] ✅ 이슈 해결 확인
+            
+            ## 🔗 관련 링크
+            - [워크플로우 실행 결과](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            - [보안 정책 가이드](https://github.com/${{ github.repository }}/blob/main/SECURITY.md)
+            
+            ---
+            *🤖 자동 생성된 보안 이슈입니다. 모든 이슈 해결 후 이 Issue를 닫아주세요.*`;
+              
+              const labels = ['security', 'checkov', component, priorityLabel];
+              
+              github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: labels
+              });
+              
+              console.log(`✅ Issue 생성 완료: ${title}`);
+              console.log(`📊 심각도 분포: ${severityDisplay}`);
+            }
+
+      # Slack 알림 (웹훅 URL이 설정된 경우)
+      - name: Send Slack notification
+        if: always() && steps.openai-analysis.outputs.issue_count != '0' && env.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          ANALYSIS_RESULT: ${{ steps.openai-analysis.outputs.analysis_result }}
+          COMPONENT: ${{ matrix.name }}
+          ISSUE_COUNT: ${{ steps.openai-analysis.outputs.issue_count }}
+        run: |
+          # 분석 결과를 파일로 저장 (특수 문자 안전 처리)
+          echo "$ANALYSIS_RESULT" > analysis_result.txt
+          
+          # Slack 메시지 생성 (분석 결과는 요약만 포함)
+          cat > slack_message.json << EOF
+          {
+            "text": "🔒 Kubernetes 보안 검사 결과",
+            "blocks": [
+              {
+                "type": "header",
+                "text": {
+                  "type": "plain_text",
+                  "text": "🔒 보안 검사 결과 - ${COMPONENT}"
+                }
+              },
+              {
+                "type": "section",
+                "fields": [
+                  {
+                    "type": "mrkdwn",
+                    "text": "*컴포넌트:* ${COMPONENT}"
+                  },
+                  {
+                    "type": "mrkdwn", 
+                    "text": "*발견된 이슈:* ${ISSUE_COUNT}개"
+                  },
+                  {
+                    "type": "mrkdwn",
+                    "text": "*실행 시간:* $(date '+%Y-%m-%d %H:%M')"
+                  },
+                  {
+                    "type": "mrkdwn",
+                    "text": "*워크플로우:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|GitHub에서 확인>"
+                  }
+                ]
+              },
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "📋 *보안 검사 완료*\n보안 이슈 ${ISSUE_COUNT}개가 발견되었습니다.\n상세 분석 결과는 GitHub Actions에서 확인하세요."
+                }
+              }
+            ]
+          }
+          EOF
+          
+          # Slack 웹훅으로 전송
+          curl -X POST -H 'Content-type: application/json' \
+            --data @slack_message.json \
+            "$SLACK_WEBHOOK_URL"
+
+      # 포크 PR이면 권한 제한으로 실패하니 업로드 스킵
+      - name: Upload SARIF (${{ matrix.name }})
+        if: |
+          always() && (github.event_name != 'pull_request' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == false))
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results/${{ matrix.name }}.sarif
+          category: checkov-${{ matrix.name }}
+
+      # 업로드 실패/스킵하더라도 파일은 아티팩트로 보존
+      - name: Upload SARIF as artifact (fallback)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sarif-${{ matrix.name }}
+          path: results/${{ matrix.name }}.sarif
+          if-no-files-found: warn
+
+      # JSON 결과도 아티팩트로 업로드
+      - name: Upload JSON results as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: json-results-${{ matrix.name }}
+          path: results/${{ matrix.name }}.json
+          if-no-files-found: warn

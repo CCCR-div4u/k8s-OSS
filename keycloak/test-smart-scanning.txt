@@ -1,0 +1,15 @@
+# 스마트 스캐닝 테스트 파일
+
+이 파일은 keycloak 디렉터리의 변경을 감지하여 
+keycloak 컴포넌트만 보안 검사를 실행하는지 테스트하기 위한 파일입니다.
+
+생성 시간: 2025-08-17 13:20
+목적: 선택적 보안 검사 기능 테스트
+예상 결과: keycloak job만 실행되어야 함
+
+테스트 시나리오:
+1. keycloak 디렉터리에만 변경사항 추가
+2. 워크플로우 트리거
+3. detect-changes job에서 keycloak만 감지
+4. render-and-scan job이 keycloak에 대해서만 실행
+5. 다른 컴포넌트들(argo-cd, harbor, sonarqube, thanos)은 스킵
