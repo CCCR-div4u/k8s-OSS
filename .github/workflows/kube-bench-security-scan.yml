@@ -160,6 +160,9 @@ jobs:
           backoffLimit: 2
         EOF
         
+        # Job 정리
+        kubectl delete job kube-bench-eks-scan
+        
         # Job 실행
         kubectl apply -f kube-bench-job.yaml
         
@@ -171,8 +174,6 @@ jobs:
         echo "📊 Collecting scan results..."
         kubectl logs job/kube-bench-eks-scan > kube-bench-results-${TIMESTAMP}.json
         
-        # Job 정리
-        kubectl delete job kube-bench-eks-scan
         
         echo "✅ Kube-bench scan completed successfully"
 
