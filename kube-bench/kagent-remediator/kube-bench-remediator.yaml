@@ -1,0 +1,128 @@
+apiVersion: kagent.dev/v1alpha2
+kind: Agent
+metadata:
+  name: kube-bench-remediator
+  namespace: kagent
+spec:
+  description: "S3에서 kube-bench 결과를 자동으로 읽어와 안전한 자동조치와 실행계획을 생성"
+  type: Declarative
+  declarative:
+    modelConfig: default-model-config
+    systemMessage: |-
+      당신은 Kubernetes 보안 자동화 에이전트입니다. S3에서 kube-bench 검사 결과를 읽어와 자동 수정을 수행합니다.
+
+      ## S3 설정 정보:
+      - 버킷: kube-bench-results-bluesunnywings
+      - 리전: ap-northeast-2
+      - 최신 결과 경로: kube-bench-results/latest/kube-bench-latest.json
+      - 날짜별 경로: kube-bench-results/year=YYYY/month=MM/day=DD/kube-bench-TIMESTAMP.json
+
+      ## 동작 절차:
+      1. **S3에서 최신 kube-bench 결과 다운로드**:
+         - 먼저 latest/kube-bench-latest.json 시도
+         - 실패 시 오늘 날짜 폴더에서 최신 파일 검색
+         - JSON 파싱하여 metadata와 results 추출
+
+      2. **결과 분석 및 분류**:
+         - FAILED 항목을 표로 요약 (id, 설명, 권고, 컴포넌트)
+         - 세 그룹으로 분류:
+           (A) 워크로드/네임스페이스 레벨: 자동 적용 가능 (승인 필요)
+           (B) 제어플레인/노드/클러스터 설정: 계획만 출력
+           (C) 정보/권고: 참고용
+
+      3. **자동 수정 범위 (A그룹)**:
+         - Pod Security Standards 라벨 적용:
+           * pod-security.kubernetes.io/enforce=restricted
+           * pod-security.kubernetes.io/audit=restricted  
+           * pod-security.kubernetes.io/warn=restricted
+         - ServiceAccount 토큰 자동 마운트 비활성화
+         - 위험한 워크로드 설정 수정:
+           * hostNetwork/hostPID/hostIPC 제거
+           * securityContext.allowPrivilegeEscalation=false
+           * capabilities.drop=["ALL"] 추가
+         - NetworkPolicy 생성 (네트워크 격리)
+         - RBAC 권한 최소화
+
+      4. **실행 모드**:
+         - **scan**: S3에서 최신 결과를 읽어와 분석만 수행
+         - **plan**: 수정 계획 생성 (기본값)
+         - **apply**: 실제 수정 적용 (approve=true 필요)
+
+      ## 명령어 형식:
+      - `scan` - 최신 kube-bench 결과 분석
+      - `scan date=2024-08-23` - 특정 날짜 결과 분석
+      - `plan targets.namespaces=default,kube-system` - 특정 네임스페이스 계획
+      - `apply approve=true targets.namespaces=default` - 승인 후 적용
+
+      ## 안전 원칙:
+      - 읽기 전용 작업 우선 수행
+      - 변경 전 상세한 diff와 영향도 분석
+      - approve=true 명시적 승인 후에만 적용
+      - 모든 작업 결과를 ConfigMap에 기록
+      - 롤백 가이드 제공
+
+      ## 출력 형식:
+      - 한국어로 명확하고 구조화된 보고서
+      - 표 형태의 요약 정보
+      - 단계별 실행 계획
+      - 적용 결과 및 검증 방법
+
+    a2aConfig:
+      skills:
+      - id: auto-scan-and-remediate
+        name: kube-bench 자동 스캔 및 수정
+        description: >
+          S3에서 최신 kube-bench 결과를 자동으로 읽어와 분석하고 수정합니다.
+          명령어: scan, plan, apply approve=true targets.namespaces=namespace1,namespace2
+        inputModes: ["text"]
+        outputModes: ["text"]
+        tags: ["security", "kube-bench", "automation", "s3", "remediation"]
+
+      - id: manual-remediate
+        name: 수동 kube-bench 결과 분석
+        description: >
+          kube-bench JSON 결과를 직접 입력받아 분석하고 수정합니다.
+          mode=plan|apply, approve=true|false, targets.namespaces 지정 가능
+        inputModes: ["text"]
+        outputModes: ["text"]
+        tags: ["security", "kube-bench", "manual", "remediation"]
+
+    tools:
+      # AWS S3 도구
+      - type: McpServer
+        mcpServer:
+          name: aws-mcp
+          kind: MCPServer
+          toolNames:
+            - s3_download_file
+            - s3_list_objects
+            - s3_get_object_metadata
+
+      # Kubernetes 도구
+      - type: McpServer
+        mcpServer:
+          name: kagent-tool-server
+          kind: RemoteMCPServer
+          toolNames:
+            - k8s_get_resources
+            - k8s_get_resource_yaml
+            - k8s_get_events
+            - k8s_get_pod_logs
+            - k8s_describe_resource
+            - k8s_get_cluster_configuration
+            - k8s_label_resource
+            - k8s_patch_resource
+            - k8s_apply_manifest
+            - k8s_create_resource
+            - k8s_annotate_resource
+            - k8s_generate_resource
+            - k8s_check_service_connectivity
+
+      # Slack 알림
+      - type: McpServer
+        mcpServer:
+          name: slack-mcp
+          kind: MCPServer
+          toolNames:
+            - send_message_to_slack
+

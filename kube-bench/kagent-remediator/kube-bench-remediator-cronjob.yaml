@@ -1,0 +1,166 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: kube-bench-auto-remediation
+  namespace: kagent
+  labels:
+    app: kube-bench-remediator
+    component: auto-scan
+spec:
+  # 매일 오전 10시 (KST 기준 오전 1시 UTC)에 실행
+  schedule: "0 1 * * *"
+  timeZone: "UTC"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        app: kube-bench-remediator
+        component: auto-scan
+    spec:
+      template:
+        metadata:
+          labels:
+            app: kube-bench-remediator
+            component: auto-scan
+        spec:
+          serviceAccountName: kube-bench-remediator
+          restartPolicy: OnFailure
+          containers:
+          - name: auto-remediation
+            image: curlimages/curl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              echo "🔍 Starting automatic kube-bench remediation..."
+              
+              # kagent API 호출을 통한 자동 스캔 실행
+              # 실제 구현에서는 kagent API 엔드포인트를 사용
+              
+              KAGENT_API_URL="http://kagent-api.kagent.svc.cluster.local:8080"
+              AGENT_NAME="kube-bench-remediator"
+              
+              # 자동 스캔 실행
+              curl -X POST "${KAGENT_API_URL}/api/v1/agents/${AGENT_NAME}/invoke" \
+                -H "Content-Type: application/json" \
+                -d '{
+                  "input": "scan",
+                  "metadata": {
+                    "source": "cronjob",
+                    "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
+                    "auto_mode": true
+                  }
+                }' || echo "❌ Failed to invoke agent"
+              
+              echo "✅ Auto remediation job completed"
+            
+            env:
+            - name: TZ
+              value: "Asia/Seoul"
+            
+            resources:
+              requests:
+                cpu: 100m
+                memory: 128Mi
+              limits:
+                cpu: 200m
+                memory: 256Mi
+                
+            volumeMounts:
+            - name: config
+              mountPath: /etc/kube-bench-remediator
+              readOnly: true
+              
+          volumes:
+          - name: config
+            configMap:
+              name: kube-bench-remediator-config
+
+---
+# 수동 실행을 위한 Job 템플릿
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kube-bench-manual-remediation
+  namespace: kagent
+  labels:
+    app: kube-bench-remediator
+    component: manual-scan
+spec:
+  template:
+    metadata:
+      labels:
+        app: kube-bench-remediator
+        component: manual-scan
+    spec:
+      serviceAccountName: kube-bench-remediator
+      restartPolicy: Never
+      containers:
+      - name: manual-remediation
+        image: curlimages/curl:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "🔍 Starting manual kube-bench remediation..."
+          echo "Mode: ${REMEDIATION_MODE:-scan}"
+          echo "Targets: ${TARGET_NAMESPACES:-default}"
+          echo "Approve: ${APPROVE:-false}"
+          
+          KAGENT_API_URL="http://kagent-api.kagent.svc.cluster.local:8080"
+          AGENT_NAME="kube-bench-remediator"
+          
+          # 입력 명령어 구성
+          INPUT_COMMAND="${REMEDIATION_MODE:-scan}"
+          if [ -n "$TARGET_NAMESPACES" ]; then
+            INPUT_COMMAND="$INPUT_COMMAND targets.namespaces=$TARGET_NAMESPACES"
+          fi
+          if [ "$APPROVE" = "true" ]; then
+            INPUT_COMMAND="$INPUT_COMMAND approve=true"
+          fi
+          
+          # 에이전트 호출
+          curl -X POST "${KAGENT_API_URL}/api/v1/agents/${AGENT_NAME}/invoke" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "input": "'"$INPUT_COMMAND"'",
+              "metadata": {
+                "source": "manual-job",
+                "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
+                "user": "'"${USER:-system}"'"
+              }
+            }' || echo "❌ Failed to invoke agent"
+          
+          echo "✅ Manual remediation job completed"
+        
+        env:
+        - name: REMEDIATION_MODE
+          value: "scan"  # scan, plan, apply
+        - name: TARGET_NAMESPACES
+          value: "default"
+        - name: APPROVE
+          value: "false"
+        - name: USER
+          value: "admin"
+        - name: TZ
+          value: "Asia/Seoul"
+        
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+            
+        volumeMounts:
+        - name: config
+          mountPath: /etc/kube-bench-remediator
+          readOnly: true
+          
+      volumes:
+      - name: config
+        configMap:
+          name: kube-bench-remediator-config
