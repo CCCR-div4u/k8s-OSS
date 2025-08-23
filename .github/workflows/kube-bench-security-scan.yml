@@ -9,7 +9,7 @@ on:
       cluster_name:
         description: 'EKS 클러스터 이름'
         required: false
-        default: 'default-cluster'
+        default: 'bluesunnywings-eks'
       severity_threshold:
         description: '알림 임계값 (CRITICAL, HIGH, MEDIUM, LOW)'
         required: false
@@ -28,7 +28,7 @@ permissions:
   security-events: write
 
 env:
-  CLUSTER_NAME: ${{ github.event.inputs.cluster_name || 'default-cluster' }}
+  CLUSTER_NAME: ${{ github.event.inputs.cluster_name || 'bluesunnywings-eks' }}
   SEVERITY_THRESHOLD: ${{ github.event.inputs.severity_threshold || 'HIGH' }}
 
 jobs:
