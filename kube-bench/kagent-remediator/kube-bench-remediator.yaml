@@ -19,8 +19,9 @@ spec:
 
       ## 동작 절차:
       1. **S3에서 최신 kube-bench 결과 다운로드**:
-         - 먼저 latest/kube-bench-latest.json 시도
-         - 실패 시 오늘 날짜 폴더에서 최신 파일 검색
+         - call_aws 도구를 사용하여 S3 API 호출
+         - 먼저 s3 get-object로 latest/kube-bench-latest.json 다운로드 시도
+         - 실패 시 s3 list-objects-v2로 오늘 날짜 폴더에서 최신 파일 검색
          - JSON 파싱하여 metadata와 results 추출
 
       2. **결과 분석 및 분류**:
@@ -88,15 +89,14 @@ spec:
         tags: ["security", "kube-bench", "manual", "remediation"]
 
     tools:
-      # AWS S3 도구
+      # AWS 도구
       - type: McpServer
         mcpServer:
           name: aws-mcp
           kind: MCPServer
           toolNames:
-            - s3_download_file
-            - s3_list_objects
-            - s3_get_object_metadata
+            - call_aws
+            - suggest_aws_commands
 
       # Kubernetes 도구
       - type: McpServer
@@ -117,6 +117,7 @@ spec:
             - k8s_annotate_resource
             - k8s_generate_resource
             - k8s_check_service_connectivity
+            - k8s_execute_command
 
       # Slack 알림
       - type: McpServer
