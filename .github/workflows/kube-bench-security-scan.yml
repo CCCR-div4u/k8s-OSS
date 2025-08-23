@@ -186,12 +186,25 @@ jobs:
         echo "⏳ Waiting for kube-bench scan to complete..."
         kubectl wait --for=condition=complete --timeout=600s job/$JOB_NAME
         
-        # Job 상태 확인
-        JOB_STATUS=$(kubectl get job $JOB_NAME -o jsonpath='{.status.conditions[0].type}')
-        if [ "$JOB_STATUS" != "Complete" ]; then
-          echo "❌ Job failed or timed out"
+        # Job 상태 확인 (더 안정적인 방법)
+        SUCCEEDED=$(kubectl get job $JOB_NAME -o jsonpath='{.status.succeeded}' 2>/dev/null || echo "0")
+        FAILED=$(kubectl get job $JOB_NAME -o jsonpath='{.status.failed}' 2>/dev/null || echo "0")
+        
+        echo "📊 Job Status: Succeeded=$SUCCEEDED, Failed=$FAILED"
+        
+        if [ "$SUCCEEDED" = "1" ]; then
+          echo "✅ Job completed successfully"
+        elif [ "$FAILED" -gt "0" ]; then
+          echo "❌ Job failed"
           kubectl describe job $JOB_NAME
-          kubectl logs job/$JOB_NAME
+          kubectl get pods -l job-name=$JOB_NAME
+          kubectl logs -l job-name=$JOB_NAME --tail=50
+          exit 1
+        else
+          echo "❌ Job status unclear"
+          kubectl describe job $JOB_NAME
+          kubectl get pods -l job-name=$JOB_NAME
+          kubectl logs -l job-name=$JOB_NAME --tail=50
           exit 1
         fi
         
