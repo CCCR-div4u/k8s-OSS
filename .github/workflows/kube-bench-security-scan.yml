@@ -59,12 +59,13 @@ jobs:
     - name: 🔍 Run Kube-bench Security Scan
       id: kube_bench_scan
       run: |
-        # 타임스탬프 생성 (고유한 Job 이름을 위해)
-        TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+        # 타임스탬프 생성 (고유한 Job 이름을 위해, RFC 1123 호환)
+        TIMESTAMP_FILE=$(date +"%Y%m%d_%H%M%S")  # 파일명용 (밑줄 사용 가능)
+        TIMESTAMP_K8S=$(date +"%Y%m%d-%H%M%S")   # Kubernetes 리소스명용 (하이픈만 사용)
         RANDOM_SUFFIX=$(shuf -i 1000-9999 -n 1)
-        JOB_NAME="kube-bench-eks-scan-${TIMESTAMP}-${RANDOM_SUFFIX}"
+        JOB_NAME="kube-bench-eks-scan-${TIMESTAMP_K8S}-${RANDOM_SUFFIX}"
         
-        echo "timestamp=$TIMESTAMP" >> $GITHUB_OUTPUT
+        echo "timestamp=$TIMESTAMP_FILE" >> $GITHUB_OUTPUT
         echo "job_name=$JOB_NAME" >> $GITHUB_OUTPUT
         
         # 기존 kube-bench Job들 정리 (충돌 방지)
@@ -86,7 +87,7 @@ jobs:
             app: kube-bench
             scan-type: security
             created-by: github-actions
-            timestamp: "$TIMESTAMP"
+            timestamp: "$TIMESTAMP_K8S"
         spec:
           template:
             metadata:
@@ -196,7 +197,7 @@ jobs:
         
         # 결과 수집
         echo "📊 Collecting scan results..."
-        kubectl logs job/$JOB_NAME > kube-bench-results-${TIMESTAMP}.json
+        kubectl logs job/$JOB_NAME > kube-bench-results-${TIMESTAMP_FILE}.json
         
         # Job 정리
         echo "🧹 Cleaning up job $JOB_NAME"
