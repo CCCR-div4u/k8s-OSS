@@ -59,22 +59,40 @@ jobs:
     - name: 🔍 Run Kube-bench Security Scan
       id: kube_bench_scan
       run: |
-        # 타임스탬프 생성
+        # 타임스탬프 생성 (고유한 Job 이름을 위해)
         TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+        RANDOM_SUFFIX=$(shuf -i 1000-9999 -n 1)
+        JOB_NAME="kube-bench-eks-scan-${TIMESTAMP}-${RANDOM_SUFFIX}"
+        
         echo "timestamp=$TIMESTAMP" >> $GITHUB_OUTPUT
+        echo "job_name=$JOB_NAME" >> $GITHUB_OUTPUT
+        
+        # 기존 kube-bench Job들 정리 (충돌 방지)
+        echo "🧹 Cleaning up old kube-bench jobs..."
+        kubectl get jobs -o name | grep "kube-bench-eks-scan" | xargs -r kubectl delete --ignore-not-found=true
+        echo "✅ Old jobs cleaned up"
         
         # kube-bench Job 실행
-        echo "🚀 Starting kube-bench security scan..."
+        echo "🚀 Starting kube-bench security scan with job name: $JOB_NAME"
         
-        # EKS용 kube-bench Job 매니페스트 생성
-        cat > kube-bench-job.yaml << 'EOF'
+        # EKS용 kube-bench Job 매니페스트 생성 (고유한 이름 사용)
+        cat > kube-bench-job.yaml << EOF
         apiVersion: batch/v1
         kind: Job
         metadata:
-          name: kube-bench-eks-scan
+          name: $JOB_NAME
           namespace: default
+          labels:
+            app: kube-bench
+            scan-type: security
+            created-by: github-actions
+            timestamp: "$TIMESTAMP"
         spec:
           template:
+            metadata:
+              labels:
+                app: kube-bench
+                scan-type: security
             spec:
               hostPID: true
               nodeSelector:
@@ -160,20 +178,29 @@ jobs:
           backoffLimit: 2
         EOF
         
-        
         # Job 실행
         kubectl apply -f kube-bench-job.yaml
         
         # Job 완료 대기 (최대 10분)
         echo "⏳ Waiting for kube-bench scan to complete..."
-        kubectl wait --for=condition=complete --timeout=600s job/kube-bench-eks-scan
+        kubectl wait --for=condition=complete --timeout=600s job/$JOB_NAME
+        
+        # Job 상태 확인
+        JOB_STATUS=$(kubectl get job $JOB_NAME -o jsonpath='{.status.conditions[0].type}')
+        if [ "$JOB_STATUS" != "Complete" ]; then
+          echo "❌ Job failed or timed out"
+          kubectl describe job $JOB_NAME
+          kubectl logs job/$JOB_NAME
+          exit 1
+        fi
         
         # 결과 수집
         echo "📊 Collecting scan results..."
-        kubectl logs job/kube-bench-eks-scan > kube-bench-results-${TIMESTAMP}.json
+        kubectl logs job/$JOB_NAME > kube-bench-results-${TIMESTAMP}.json
         
         # Job 정리
-        kubectl delete job kube-bench-eks-scan
+        echo "🧹 Cleaning up job $JOB_NAME"
+        kubectl delete job $JOB_NAME
         
         echo "✅ Kube-bench scan completed successfully"
 
@@ -599,12 +626,160 @@ jobs:
           security-report-*.md
         retention-days: 30
 
+    - name: 📤 Upload Results to S3
+      if: always()
+      run: |
+        TIMESTAMP=${{ steps.kube_bench_scan.outputs.timestamp }}
+        RESULTS_FILE="kube-bench-results-${TIMESTAMP}.json"
+        
+        # 파일 존재 확인
+        if [ ! -f "$RESULTS_FILE" ]; then
+          echo "❌ Results file not found: $RESULTS_FILE"
+          exit 1
+        fi
+        
+        # 날짜 정보 추출 (KST 기준)
+        YEAR=$(TZ=Asia/Seoul date +%Y)
+        MONTH=$(TZ=Asia/Seoul date +%m)
+        DAY=$(TZ=Asia/Seoul date +%d)
+        
+        # S3 경로 설정
+        S3_BUCKET="${{ secrets.KUBE_BENCH_S3_BUCKET }}"
+        if [ -z "$S3_BUCKET" ]; then
+          echo "❌ KUBE_BENCH_S3_BUCKET secret not configured"
+          exit 1
+        fi
+        
+        S3_DATE_PATH="s3://${S3_BUCKET}/kube-bench-results/year=${YEAR}/month=${MONTH}/day=${DAY}"
+        S3_LATEST_PATH="s3://${S3_BUCKET}/kube-bench-results/latest"
+        
+        echo "📤 Uploading kube-bench results to S3..."
+        echo "  - Source: ${RESULTS_FILE}"
+        echo "  - S3 Bucket: ${S3_BUCKET}"
+        echo "  - Date Path: year=${YEAR}/month=${MONTH}/day=${DAY}"
+        echo "  - Cluster: ${{ env.CLUSTER_NAME }}"
+        
+        # 메타데이터 추가를 위한 임시 파일 생성
+        python3 << 'EOF'
+        import json
+        import os
+        from datetime import datetime
+        
+        timestamp = os.environ['TIMESTAMP']
+        results_file = f"kube-bench-results-{timestamp}.json"
+        
+        try:
+            # 원본 결과 파일 읽기
+            with open(results_file, 'r') as f:
+                content = f.read()
+            
+            # JSON 파싱 시도
+            try:
+                results_data = json.loads(content)
+            except json.JSONDecodeError:
+                # JSON이 아닌 경우 텍스트로 래핑
+                results_data = {"raw_output": content}
+            
+            # 메타데이터 추가
+            enhanced_results = {
+                "metadata": {
+                    "timestamp": timestamp,
+                    "scan_date_utc": datetime.utcnow().isoformat() + "Z",
+                    "scan_date_kst": datetime.now().strftime("%Y-%m-%d %H:%M:%S KST"),
+                    "cluster_name": os.environ.get('CLUSTER_NAME', 'unknown'),
+                    "workflow_run_id": os.environ.get('GITHUB_RUN_ID', ''),
+                    "workflow_run_number": os.environ.get('GITHUB_RUN_NUMBER', ''),
+                    "commit_sha": os.environ.get('GITHUB_SHA', ''),
+                    "repository": os.environ.get('GITHUB_REPOSITORY', ''),
+                    "benchmark_version": "eks-1.0.1"
+                },
+                "results": results_data
+            }
+            
+            # S3 업로드용 파일 생성
+            s3_filename = f"kube-bench-{timestamp}.json"
+            with open(s3_filename, 'w') as f:
+                json.dump(enhanced_results, f, indent=2, ensure_ascii=False)
+            
+            print(f"✅ Enhanced results file created: {s3_filename}")
+            
+        except Exception as e:
+            print(f"❌ Error processing results: {e}")
+            # 실패 시 원본 파일 사용
+            import shutil
+            shutil.copy(results_file, f"kube-bench-{timestamp}.json")
+            print(f"⚠️ Using original file as fallback")
+        
+        EOF
+        
+        # S3에 업로드
+        S3_FILENAME="kube-bench-${TIMESTAMP}.json"
+        
+        # 날짜별 경로에 업로드
+        aws s3 cp "${S3_FILENAME}" \
+          "${S3_DATE_PATH}/${S3_FILENAME}" \
+          --content-type "application/json" \
+          --metadata "cluster=${CLUSTER_NAME},scan-date=${YEAR}-${MONTH}-${DAY},timestamp=${TIMESTAMP}"
+        
+        if [ $? -eq 0 ]; then
+          echo "✅ Results uploaded to date path: ${S3_DATE_PATH}/${S3_FILENAME}"
+        else
+          echo "❌ Failed to upload to date path"
+          exit 1
+        fi
+        
+        # 최신 결과로도 업로드 (빠른 접근용)
+        aws s3 cp "${S3_FILENAME}" \
+          "${S3_LATEST_PATH}/kube-bench-latest.json" \
+          --content-type "application/json" \
+          --metadata "cluster=${CLUSTER_NAME},scan-date=${YEAR}-${MONTH}-${DAY},timestamp=${TIMESTAMP}"
+        
+        if [ $? -eq 0 ]; then
+          echo "✅ Latest results updated: ${S3_LATEST_PATH}/kube-bench-latest.json"
+        else
+          echo "⚠️ Failed to update latest results (non-critical)"
+        fi
+        
+        echo ""
+        echo "📊 S3 Upload Summary:"
+        echo "  - Bucket: ${S3_BUCKET}"
+        echo "  - Date Path: year=${YEAR}/month=${MONTH}/day=${DAY}"
+        echo "  - Filename: ${S3_FILENAME}"
+        echo "  - File Size: $(ls -lh ${S3_FILENAME} | awk '{print $5}')"
+        echo ""
+        echo "🔍 S3 Access Examples:"
+        echo "  - Today's scans: aws s3 ls ${S3_DATE_PATH}/"
+        echo "  - Latest scan: aws s3 cp ${S3_LATEST_PATH}/kube-bench-latest.json ."
+        echo "  - Specific file: aws s3 cp ${S3_DATE_PATH}/${S3_FILENAME} ."
+      
+      env:
+        CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+        TIMESTAMP: ${{ steps.kube_bench_scan.outputs.timestamp }}
+
     - name: 📊 Update Security Dashboard
       if: always()
       run: |
         # 보안 대시보드 업데이트 (선택사항)
         echo "📊 Security scan completed at $(date)"
-        echo "Results uploaded to artifacts for historical tracking"
+        echo "Results uploaded to GitHub artifacts and S3 for historical tracking"
+        
+        # S3 경로 정보 출력
+        YEAR=$(TZ=Asia/Seoul date +%Y)
+        MONTH=$(TZ=Asia/Seoul date +%m)
+        DAY=$(TZ=Asia/Seoul date +%d)
+        S3_BUCKET="${{ secrets.KUBE_BENCH_S3_BUCKET }}"
+        
+        if [ -n "$S3_BUCKET" ]; then
+          echo ""
+          echo "🔗 S3 Results Location:"
+          echo "  - Latest: s3://${S3_BUCKET}/kube-bench-results/latest/kube-bench-latest.json"
+          echo "  - Today: s3://${S3_BUCKET}/kube-bench-results/year=${YEAR}/month=${MONTH}/day=${DAY}/"
+          echo ""
+          echo "📅 Date-based Search Examples:"
+          echo "  - List today: aws s3 ls s3://${S3_BUCKET}/kube-bench-results/year=${YEAR}/month=${MONTH}/day=${DAY}/"
+          echo "  - List this month: aws s3 ls s3://${S3_BUCKET}/kube-bench-results/year=${YEAR}/month=${MONTH}/ --recursive"
+          echo "  - List this year: aws s3 ls s3://${S3_BUCKET}/kube-bench-results/year=${YEAR}/ --recursive"
+        fi
         
         # 향후 확장: 메트릭을 외부 모니터링 시스템으로 전송
         # 예: Prometheus, CloudWatch, Datadog 등
